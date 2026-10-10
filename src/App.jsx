@@ -400,6 +400,9 @@ function Legend() {
   );
 }
 
+// Partnerships and competitors move no money, so they have no direction.
+const NO_MONEY = new Set(["partnership", "competitor"]);
+
 function TypeDot({ type }) {
   const t = EDGE_TYPES[type] || EDGE_TYPES.partnership;
   return <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 mt-1" style={{ background: t.color }} title={t.label} />;
@@ -425,7 +428,7 @@ function Details({ node, edge, byKey, edges, holdings, onSelect, onFocus, onLook
         <div className="text-base font-semibold">{edge.label}</div>
         <div className="flex items-center gap-2 text-slate-700">
           <button className="font-medium hover:underline" onClick={() => onFocus(edge.source)}>{byKey[edge.source]?.name}</button>
-          <span className="text-slate-400">pays →</span>
+          <span className="text-slate-400">{NO_MONEY.has(edge.type) ? (edge.type === "competitor" ? "competes with" : "partners with") : "pays →"}</span>
           <button className="font-medium hover:underline" onClick={() => onFocus(edge.target)}>{byKey[edge.target]?.name}</button>
         </div>
         <dl className="grid grid-cols-[90px_1fr] gap-y-1 text-slate-600">
@@ -441,14 +444,15 @@ function Details({ node, edge, byKey, edges, holdings, onSelect, onFocus, onLook
     );
   }
   if (!node) return <p className="text-slate-500">Click a company or a line on the map.</p>;
-  const out = edges.filter((e) => e.source === node.key);
-  const inc = edges.filter((e) => e.target === node.key);
+  const out = edges.filter((e) => e.source === node.key && !NO_MONEY.has(e.type));
+  const inc = edges.filter((e) => e.target === node.key && !NO_MONEY.has(e.type));
+  const peers = edges.filter((e) => (e.source === node.key || e.target === node.key) && NO_MONEY.has(e.type));
   const isHolding = holdings.some((h) => h.company === node.key);
-  const rows = (list, dir) =>
+  const rows = (list) =>
     list
       .sort((a, b) => (b.amount_usd || 0) - (a.amount_usd || 0))
       .map((e) => {
-        const other = byKey[dir === "out" ? e.target : e.source];
+        const other = byKey[e.source === node.key ? e.target : e.source];
         return (
           <li key={e.key} className="flex gap-2 py-1.5 border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 -mx-1 px-1 rounded" onClick={() => onSelect({ kind: "edge", key: e.key })}>
             <TypeDot type={e.type} />
@@ -496,17 +500,23 @@ function Details({ node, edge, byKey, edges, holdings, onSelect, onFocus, onLook
       </div>
       {out.length > 0 && (
         <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Money out ({out.length}): invests in, buys from</h3>
-          <ul>{rows(out, "out")}</ul>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Money out ({out.length}): invests in, acquires, buys from</h3>
+          <ul>{rows(out)}</ul>
         </section>
       )}
       {inc.length > 0 && (
         <section>
           <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Money in ({inc.length}): investors, customers</h3>
-          <ul>{rows(inc, "in")}</ul>
+          <ul>{rows(inc)}</ul>
         </section>
       )}
-      {out.length + inc.length === 0 && <p className="text-slate-500">No relationships found yet. Try "Search the web for more".</p>}
+      {peers.length > 0 && (
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">No money either way ({peers.length}): partners, competitors</h3>
+          <ul>{rows(peers)}</ul>
+        </section>
+      )}
+      {out.length + inc.length + peers.length === 0 && <p className="text-slate-500">No relationships found yet. Try "Search the web for more".</p>}
     </div>
   );
 }

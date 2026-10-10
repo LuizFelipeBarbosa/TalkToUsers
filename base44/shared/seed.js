@@ -206,9 +206,11 @@ export function canonicalGraph({ companies, relationships, holdings = [] }) {
   const rels = new Map();
   const newer = (a, b) => String(a.date || "").localeCompare(String(b.date || "")) > 0;
   for (const r of relationships) {
-    const source = canonicalKey(r.source);
-    const target = canonicalKey(r.target);
+    let source = canonicalKey(r.source);
+    let target = canonicalKey(r.target);
     if (source === target) continue;
+    // Partnerships and competitors have no direction: A–B and B–A are the same edge.
+    if ((r.type === "partnership" || r.type === "competitor") && source > target) [source, target] = [target, source];
     const key = `${source}|${r.type}|${target}`;
     const prev = rels.get(key);
     const e = { ...r, key, source, target };

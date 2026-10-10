@@ -205,7 +205,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
                 strokeWidth={hit ? w + 1.2 : isSel ? w + 1.5 : w}
                 strokeDasharray={meta.dashed ? "5 5" : hit ? "10 6" : undefined}
                 className={hit ? "flow" : undefined}
-                markerEnd={e.type === "competitor" ? undefined : `url(#arrow-${hit ? "hit" : e.type})`}
+                markerEnd={e.type === "competitor" || e.type === "partnership" ? undefined : `url(#arrow-${hit ? "hit" : e.type})`}
                 strokeLinecap="round"
                 opacity={0.9}
               />

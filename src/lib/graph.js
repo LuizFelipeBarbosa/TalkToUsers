@@ -11,6 +11,7 @@ export const EDGE_TYPES = {
   hardware: { label: "Hardware / chips", color: "#e64980" },
   cloud: { label: "Cloud / compute", color: "#4c6ef5" },
   software: { label: "Software / customer", color: "#9775fa" },
+  supplier: { label: "Supplier / customer", color: "#e8590c" },
   acquisition: { label: "Acquisition", color: "#f59f00" },
   partnership: { label: "Partnership", color: "#868e96" },
   competitor: { label: "Competitor", color: "#adb5bd", dashed: true },
@@ -18,8 +19,8 @@ export const EDGE_TYPES = {
 
 // How much the receiving side (target) depends on the paying side (source)
 // when no deal size is known, and vice versa.
-const RECEIVER_DEPENDENCE = { owner: 0.6, investment: 0.35, venture: 0.35, hardware: 0.2, cloud: 0.3, software: 0.15, acquisition: 0.55, partnership: 0.1, competitor: 0.1 };
-const PAYER_DEPENDENCE = { owner: 0.35, investment: 0.25, venture: 0.2, hardware: 0.2, cloud: 0.25, software: 0.3, acquisition: 0.35, partnership: 0.1, competitor: 0.1 };
+const RECEIVER_DEPENDENCE = { owner: 0.6, investment: 0.35, venture: 0.35, hardware: 0.2, cloud: 0.3, software: 0.15, supplier: 0.25, acquisition: 0.55, partnership: 0.1, competitor: 0.1 };
+const PAYER_DEPENDENCE = { owner: 0.35, investment: 0.25, venture: 0.2, hardware: 0.2, cloud: 0.25, software: 0.3, supplier: 0.3, acquisition: 0.35, partnership: 0.1, competitor: 0.1 };
 
 const DEFAULT_VALUE = 5e9; // used when a company's size is unknown
 
@@ -126,7 +127,7 @@ export function impactPath(impacts, key) {
   return path;
 }
 
-const MONEY_TYPES = new Set(["owner", "investment", "venture", "hardware", "cloud", "software", "acquisition"]);
+const MONEY_TYPES = new Set(["owner", "investment", "venture", "hardware", "cloud", "software", "supplier", "acquisition"]);
 
 /**
  * Circular financing: directed money loops (length 2-4) that include at least one

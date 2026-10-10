@@ -9,13 +9,15 @@ import { createClientFromRequest } from "npm:@base44/sdk@0.8.41";
 import { secrets } from "base44:runtime";
 import { companyKey, KNOWN_COMPANIES } from "../../shared/seed.js";
 
-const TYPES = ["owner", "investment", "venture", "hardware", "cloud", "software", "acquisition", "partnership", "competitor"];
+const TYPES = ["owner", "investment", "venture", "hardware", "cloud", "software", "supplier", "acquisition", "partnership", "competitor"];
+// No money changes hands, so the direction carries no meaning: stored with the looked-up company as source.
+const UNDIRECTED = new Set(["partnership", "competitor"]);
 const CACHE_HOURS = 72;
-const MAX_ARTICLES = 6;
+const MAX_ARTICLES = 8;
 const ARTICLE_CHARS = 10000;
 // Passages worth keeping when an article is longer than ARTICLE_CHARS: investor lists
-// often sit deep in a page (e.g. Wikipedia, long news features).
-const RELEVANT = /(invest|led by|co-led|participat|funding|raised|raises|round|backer|valuation|owner|owned|subsidiary|parent|stake|acqui|partner|customer|supplier|contract|deal)/gi;
+// and supplier/customer deals often sit deep in a page (e.g. Wikipedia, long news features).
+const RELEVANT = /(invest|led by|co-led|participat|funding|raised|raises|round|backer|valuation|owner|owned|subsidiary|parent|stake|acqui|partner|customer|client|supplier|supplies|supplied|vendor|manufactur|built by|sources|purchas|buys|bought|order|fleet|cloud|chips?\b|contract|agreement|deal)/gi;
 const SKIP_HOSTS = /(youtube\.com|facebook\.com|instagram\.com|tiktok\.com|x\.com|twitter\.com|reddit\.com|linkedin\.com\/in\/|glassdoor\.|indeed\.)/i;
 
 function secret(name: string): string | undefined {
@@ -78,10 +80,13 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
   const unlockerZone = secret("BRIGHTDATA_UNLOCKER_ZONE") || "web_unlocker1";
   // Plain-language queries: Google answers them faster and more reliably than long
   // OR chains, and "X investors" surfaces the company's own funding announcements.
+  // Two of them are about where the money goes (suppliers, cloud, chips, the company's own
+  // investments and acquisitions) and who pays it (customers); all run in parallel.
   const queries = [
     `${name} investors funding round`,
-    `"${name}" partnership OR acquires OR "deal with" OR customer OR supplier`,
     `${name} parent company owner`,
+    `${name} suppliers manufacturing partner cloud contract`,
+    `${name} customers acquisitions investments deals`,
   ];
   const t0 = Date.now();
   // Google via Bright Data sometimes hangs on one query: once one search is back,
@@ -98,13 +103,14 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
   );
   const docs: Doc[] = [];
   const seen = new Set<string>();
+  const capital = /invest|rais|fund|round|backer|valuation/i;
   const snippets: string[] = [];
   const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
   // Interleave the queries' results so each query gets some of the reading budget.
   const lists: any[][] = [];
-  for (const r of serps) {
+  for (const [i, r] of serps.entries()) {
     if (r.status !== "fulfilled") {
-      log.push(`search failed: ${String(r.reason).slice(0, 120)}`);
+      log.push(`search failed (${queries[i]}): ${String(r.reason).slice(0, 120)}`);
       continue;
     }
     let parsed: any;
@@ -129,9 +135,13 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
   // The company's own site (its newsroom/blog) comes first: funding posts list every investor.
   const own = companyKey(name);
   const isOwn = (u: string) => own.length > 2 && companyKey(host(u).split(".").slice(-2, -1)[0] || "") === own;
-  const funding = (d: Doc) => /invest|rais|fund|round|backer/i.test(d.url + " " + d.title);
+  const funding = (d: Doc) => capital.test(d.url + " " + d.title);
   const ownDocs = candidates.filter((d) => isOwn(d.url)).sort((a, b) => Number(funding(b)) - Number(funding(a))).slice(0, 3);
-  docs.push(...[...ownDocs, ...candidates.filter((d) => !isOwn(d.url))].slice(0, MAX_ARTICLES + 2));
+  // At most half the reading budget goes to funding articles, so suppliers and customers get read too.
+  let fundingLeft = Math.ceil((MAX_ARTICLES + 2) / 2);
+  const ordered = [...ownDocs, ...candidates.filter((d) => !isOwn(d.url))];
+  const picked = ordered.filter((d) => !funding(d) || fundingLeft-- > 0);
+  docs.push(...[...picked, ...ordered.filter((d) => !picked.includes(d))].slice(0, MAX_ARTICLES + 2));
   log.push(`search: ${seen.size} results from ${lists.length}/${queries.length} queries in ${Date.now() - t0}ms`);
 
   // Read the top articles in parallel; keep whichever come back in time.
@@ -217,8 +227,8 @@ const EXTRACT_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          source: { type: "string", description: "Company the money flows FROM (investor, buyer, acquirer)" },
-          target: { type: "string", description: "Company the money flows TO (investee, seller, acquired)" },
+          source: { type: "string", description: "Company the money flows FROM (investor, buyer, customer, acquirer)" },
+          target: { type: "string", description: "Company the money flows TO (investee, supplier, seller, acquired)" },
           type: { type: "string", enum: TYPES },
           amount_usd: { type: "number", description: "Deal size in USD, 0 if not stated" },
           label: { type: "string", description: "Callout under 70 characters, e.g. 'Nvidia to invest up to $100B in OpenAI'" },
@@ -239,11 +249,15 @@ function extractionPrompt(name: string, docs: Doc[] | null) {
 Company of interest: "${name}".
 Funding: put every funding round of "${name}" in funding_rounds and list EVERY investor the documents name for it, one name per entry: leads in lead_investors, everyone else ("with participation from", "existing investors", "also joined") in other_investors. If a document lists 15 investors, return all 15. The round total belongs to the round only, never to a single investor. Do not repeat round investors in relationships.
 Ownership: if a document says "${name}" is owned by, a subsidiary of, or majority-owned by another company, fill company.parent, including its kind and market value.
-List every other concrete relationship between "${name}" and another named company or investor in relationships: direct investments outside a round (type "investment" for corporate investors, "venture" for VC funds), acquisitions, purchases of chips/hardware ("hardware"), cloud or compute contracts ("cloud"), software/customer relationships ("software": the customer is the source, the vendor is the target), partnerships, and named competitors.
-Direction rule: source is who pays (investor, buyer, customer, acquirer); target is who receives the money.
+List every other concrete relationship between "${name}" and another named company or investor in relationships. Cover both directions of money, not just who funds "${name}":
+- Money OUT of "${name}" (source "${name}"): companies "${name}" invested in ("investment") or acquired ("acquisition"); its suppliers, manufacturers and vehicle/component/equipment makers ("supplier"); chips/hardware it buys ("hardware"); its cloud or compute providers ("cloud"); software or technology it licenses FROM others ("software").
+- Money IN to "${name}" (target "${name}"): direct investments outside a round ("investment" for corporate investors, "venture" for VC funds); customers that buy from it or license its technology (type by what they buy: "supplier" for goods/services, "cloud", "hardware" or "software").
+If a document only says two companies "partner" without saying who supplies or pays whom, use "partnership".
+- No money either way: "partnership" only when neither side pays the other (joint development, integration, distribution or ride-hailing tie-ups with no stated payment), and named "competitor"s.
+Direction rule: source is who pays (investor, buyer, customer, acquirer); target is who receives the money. E.g. "<A> manufactures products for ${name}" is source "${name}", target <A>, type "supplier"; "${name} runs on <B>'s cloud" is source "${name}", target <B>, type "cloud"; "<C> signed a contract to buy from ${name}" is source <C>, target "${name}".
 Use canonical company names (e.g. "Nvidia", not "NVIDIA Corporation"; "Andreessen Horowitz", not "a16z"). Add every investor and counterparty to counterparties with its kind. Skip people, governments and unnamed parties.
 Only include relationships the documents actually state; do not use outside knowledge. Copy a short verbatim quote as evidence.
-Ignore news on the page that is about other companies and does not involve "${name}".
+Ignore news on the page that is about other companies and does not involve "${name}". Skip deals that were called off, blocked or only rumored.
 Also give "${name}"'s and each counterparty's market value or latest valuation in USD: if a document states it (e.g. "valued at $126 billion"), set value_doc_id to that document; otherwise give the figure you know with value_doc_id 0. Give the stock ticker of every public company.`;
   if (!docs) return rules.replace("Only include relationships the documents actually state; do not use outside knowledge. Copy a short verbatim quote as evidence.", "Search the web. For each relationship, funding round and parent give the URL of the article that states it as evidence.");
   return `${rules}\n\nDocuments:\n${docs.map((d) => `\n[doc ${d.id}] ${d.title}\nURL: ${d.url}\n${d.text}`).join("\n")}`;
@@ -498,7 +512,7 @@ Deno.serve(async (req) => {
     // 1. Parent / majority owner.
     const parent = result?.company?.parent;
     const parentKey = parent?.name ? companyKey(parent.name) : "";
-    if (parentKey && parentKey !== key) {
+    if (parentKey && parentKey !== key && !/^(na|none|independent|unknown|self|nil)$/.test(parentKey)) {
       const src = sourceFor(parent.doc_id, parent.evidence, parent.name);
       if (src) {
         const rel = String(parent.relation || "owner").toLowerCase();
@@ -555,8 +569,10 @@ Deno.serve(async (req) => {
     // 3. Everything else (partnerships, acquisitions, customers, direct investments).
     for (const r of result?.relationships || []) {
       if (!TYPES.includes(r.type) || r.type === "owner") continue;
-      const s = companyKey(r.source);
-      const t = companyKey(r.target);
+      let [sName, tName] = [r.source, r.target];
+      if (UNDIRECTED.has(r.type) && companyKey(tName) === key) [sName, tName] = [tName, sName];
+      const s = companyKey(sName);
+      const t = companyKey(tName);
       const other = s === key ? t : s;
       // Round investors were already added above; don't add them twice under another type.
       if ((r.type === "investment" || r.type === "venture") && (byKey.has(`${other}|venture|${key}`) || byKey.has(`${other}|investment|${key}`) || other === parentKey)) continue;
@@ -571,7 +587,7 @@ Deno.serve(async (req) => {
         ...(r.date ? { date: r.date } : {}),
         ...src, confidence: Math.min(src.confidence, Math.max(0.3, r.confidence ?? 0.8)),
         evidence: String(r.evidence || "").slice(0, 300), origin: docs ? "live" : "llm_web",
-      }, r.source, r.target);
+      }, sName, tName);
     }
     for (const e of edges) delete e.rounds;
     log.push(`kept: ${edges.length} sourced relationships (${rounds.length} rounds, ${roundInvestors} round investors${parentKey && byKey.has(`${parentKey}|owner|${key}`) ? ", owner" : ""})`);
@@ -655,9 +671,10 @@ Deno.serve(async (req) => {
     }
     // A refresh supersedes older live edges between the same two companies under another
     // type (e.g. an investor first saved as "investment" with the whole round's total).
+    // A partnership or competitor saved the other way round on an older lookup is replaced too.
     const pairs = new Set(edges.map((e) => `${e.source}|${e.target}`));
     const fresh = new Set(edges.map((e) => e.key));
-    const stale = touching.filter((r: any) => r.origin !== "seed" && !fresh.has(r.key) && pairs.has(`${r.source}|${r.target}`));
+    const stale = touching.filter((r: any) => r.origin !== "seed" && !fresh.has(r.key) && (pairs.has(`${r.source}|${r.target}`) || (UNDIRECTED.has(r.type) && pairs.has(`${r.target}|${r.source}`))));
     edgeDeletes.push(...stale.map((r: any) => r.id));
 
     if (newCompanies.length) await db.Company.bulkCreate(newCompanies);

@@ -94,6 +94,11 @@ export default function App() {
       setFocus(key);
       setSelected({ kind: "node", key });
       setTab("details");
+      // Search market values the lookup couldn't source, without holding up the map.
+      const near = new Set([key, ...d.relationships.filter((r) => r.source === key || r.target === key).flatMap((r) => [r.source, r.target])]);
+      const stale = (c) => !c.value_source_url || !c.value_fetched || Date.now() - Date.parse(c.value_fetched) > 7 * 864e5;
+      const todo = d.companies.filter((c) => near.has(c.key) && c.kind !== "investor" && c.origin !== "seed" && stale(c)).map((c) => c.key);
+      if (todo.length) api.fillValues(todo, reload).catch((err) => console.warn("value search failed", err));
     } catch (e) {
       setLookup({ name, error: String(e.message || e) });
     }
@@ -476,7 +481,10 @@ function Details({ node, edge, byKey, edges, holdings, onSelect, onFocus, onLook
           )}
         </div>
         <div className="text-slate-500 text-xs mt-0.5">
-          {[node.sector, node.kind === "investor" ? "Investor" : node.kind === "public" ? "Public" : "Private", node.value_usd && `~${fmtUsd(node.value_usd)} value`].filter(Boolean).join(" · ")}
+          {[node.sector, node.kind === "investor" ? "Investor" : node.kind === "public" ? "Public" : "Private", node.value_usd && `~${fmtUsd(node.value_usd)} value${node.value_as_of ? ` (${node.value_as_of})` : ""}`].filter(Boolean).join(" · ")}
+          {node.value_source_url && (
+            <a href={node.value_source_url} target="_blank" rel="noreferrer" className="ml-1 underline hover:text-slate-700">{node.value_source || "source"}</a>
+          )}
         </div>
         {node.description && <p className="mt-2 text-slate-700">{node.description}</p>}
         <div className="flex gap-2 mt-3">

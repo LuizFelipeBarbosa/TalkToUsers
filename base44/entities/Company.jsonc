@@ -8,6 +8,11 @@
     "kind": { "type": "string", "enum": ["public", "private", "investor"], "default": "private" },
     "sector": { "type": "string" },
     "value_usd": { "type": "number", "description": "Market value or last valuation in USD (approximate)" },
+    "value_as_of": { "type": "string", "description": "Date of the market value figure, if known" },
+    "value_source_url": { "type": "string", "description": "Page the market value came from" },
+    "value_source": { "type": "string", "description": "Label for a value that came from a data feed, e.g. a stock quote" },
+    "value_fetched": { "type": "string", "description": "ISO time the market value was last sourced" },
+    "ticker": { "type": "string", "description": "Stock ticker, for public companies" },
     "description": { "type": "string" },
     "last_fetched": { "type": "string", "description": "ISO time of the last live lookup; empty for seed-only companies" },
     "origin": { "type": "string", "enum": ["seed", "live"], "default": "live" }

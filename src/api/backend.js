@@ -37,6 +37,7 @@ const offline = {
     }
     return { key, cached: true, log: ["offline demo data"] };
   },
+  async fillValues() {},
   async addHolding(company, name, stake_usd) {
     const h = { id: company, company, name, stake_usd };
     mem.holdings = [...mem.holdings.filter((x) => x.company !== company), h];
@@ -105,6 +106,15 @@ const online = {
       return res.data;
     } finally {
       clearInterval(timer);
+    }
+  },
+  // Background market-value search; searches that timed out are retried, up to 3 rounds.
+  async fillValues(keys, onRound) {
+    let todo = keys;
+    for (let round = 0; round < 3 && todo.length; round++) {
+      const res = (await base44.functions.invoke("lookupCompany", { action: "fillValues", keys: todo })).data;
+      if (res?.filled) await onRound?.();
+      todo = res?.retry || [];
     }
   },
   async addHolding(company, name, stake_usd) {

@@ -161,6 +161,8 @@ const EXTRACT_SCHEMA = {
         kind: { type: "string", enum: ["public", "private", "investor"] },
         sector: { type: "string" },
         value_usd: { type: "number", description: "Market cap or latest valuation in USD, 0 if unknown" },
+        value_doc_id: { type: "number", description: "Id of the document that states value_usd, 0 if it isn't stated in one" },
+        ticker: { type: "string", description: "Stock ticker if publicly traded" },
         description: { type: "string", description: "One sentence" },
         parent: {
           type: "object",
@@ -169,6 +171,7 @@ const EXTRACT_SCHEMA = {
             name: { type: "string" },
             kind: { type: "string", enum: ["public", "private", "investor"] },
             value_usd: { type: "number", description: "The parent's market cap or valuation in USD, 0 if unknown" },
+            ticker: { type: "string", description: "Stock ticker if publicly traded" },
             relation: { type: "string", description: "e.g. 'majority owner', 'parent company', 'wholly owned subsidiary of'" },
             doc_id: { type: "number" },
             evidence: { type: "string", description: "Short verbatim quote" },
@@ -203,6 +206,8 @@ const EXTRACT_SCHEMA = {
           kind: { type: "string", enum: ["public", "private", "investor"], description: "'investor' for VC, PE, asset managers and funds" },
           sector: { type: "string" },
           value_usd: { type: "number", description: "0 if unknown" },
+          value_doc_id: { type: "number", description: "Id of the document that states value_usd, 0 if it isn't stated in one" },
+          ticker: { type: "string", description: "Stock ticker if publicly traded" },
         },
         required: ["name"],
       },
@@ -239,7 +244,7 @@ Direction rule: source is who pays (investor, buyer, customer, acquirer); target
 Use canonical company names (e.g. "Nvidia", not "NVIDIA Corporation"; "Andreessen Horowitz", not "a16z"). Add every investor and counterparty to counterparties with its kind. Skip people, governments and unnamed parties.
 Only include relationships the documents actually state; do not use outside knowledge. Copy a short verbatim quote as evidence.
 Ignore news on the page that is about other companies and does not involve "${name}".
-Also give "${name}"'s and each counterparty's approximate market value or latest valuation in USD if you know it.`;
+Also give "${name}"'s and each counterparty's market value or latest valuation in USD: if a document states it (e.g. "valued at $126 billion"), set value_doc_id to that document; otherwise give the figure you know with value_doc_id 0. Give the stock ticker of every public company.`;
   if (!docs) return rules.replace("Only include relationships the documents actually state; do not use outside knowledge. Copy a short verbatim quote as evidence.", "Search the web. For each relationship, funding round and parent give the URL of the article that states it as evidence.");
   return `${rules}\n\nDocuments:\n${docs.map((d) => `\n[doc ${d.id}] ${d.title}\nURL: ${d.url}\n${d.text}`).join("\n")}`;
 }
@@ -267,13 +272,152 @@ function whenLabel(date?: string) {
   return m[2] ? `${MONTHS[Number(m[2]) - 1] || ""} ${m[1]}`.trim() : m[1];
 }
 
+// Market values come from, in order: a stock quote (public companies), the articles the
+// lookup already read, and a Google search per company through Bright Data, run in the
+// background after the map is shown. The known-companies table is only a display fallback.
+const VALUE_SCHEMA = {
+  type: "object",
+  properties: {
+    companies: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Exactly as given" },
+          value_usd: { type: "number", description: "Market cap if public, else latest reported valuation, in USD; 0 if the results don't state one" },
+          as_of: { type: "string", description: "YYYY-MM or YYYY-MM-DD of the figure if stated" },
+          source_url: { type: "string", description: "URL of the result that states the figure" },
+        },
+        required: ["name", "value_usd"],
+      },
+    },
+  },
+};
+
+type Value = { value_usd: number; as_of?: string; source_url?: string; source?: string };
+type ValueTarget = { key: string; name: string; sector?: string; ticker?: string };
+const VALUE_TTL_DAYS = 7;
+
+// Public companies: market cap from Financial Modeling Prep, a second or two for all of them.
+async function quoteValues(list: ValueTarget[], log: string[]): Promise<Map<string, Value & { ticker: string }>> {
+  const out = new Map<string, Value & { ticker: string }>();
+  const apiKey = secret("FMP_API_KEY");
+  if (!apiKey || !list.length) return out;
+  const t0 = Date.now();
+  const fmp = async (path: string, params: Record<string, string>) => {
+    const u = new URL(`https://financialmodelingprep.com/stable/${path}`);
+    for (const [k, v] of Object.entries({ ...params, apikey: apiKey })) u.searchParams.set(k, v);
+    const res = await fetch(u, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) throw new Error(`FMP ${res.status}`);
+    return await res.json();
+  };
+  const one = async (c: ValueTarget) => {
+    try {
+      let symbol = String(c.ticker || "").trim().toUpperCase().replace(/^[A-Z]+:/, "");
+      if (!symbol) {
+        // Only an exact name match in US dollars, so "Bridge" never picks up an unrelated listing.
+        const hits = await fmp("search-name", { query: c.name, limit: "10" });
+        symbol = (hits || []).find((h: any) => companyKey(h.name) === c.key && h.currency === "USD")?.symbol || "";
+      }
+      if (!symbol) return;
+      const p = (await fmp("profile", { symbol }))?.[0];
+      if (!(p?.marketCap > 0) || (p.currency && p.currency !== "USD")) return;
+      out.set(c.key, {
+        value_usd: p.marketCap, ticker: symbol, as_of: new Date().toISOString().slice(0, 10),
+        source: `Financial Modeling Prep (${symbol})`, source_url: `https://finance.yahoo.com/quote/${symbol}`,
+      });
+    } catch (err) {
+      log.push(`quote failed for ${c.name}: ${String(err).slice(0, 60)}`);
+    }
+  };
+  // Never hold the lookup up for more than a few seconds; whatever is back by then counts.
+  await Promise.race([Promise.all(list.map(one)), new Promise((r) => setTimeout(r, 6000))]);
+  log.push(`quotes: ${out.size}/${list.length} market caps in ${Date.now() - t0}ms`);
+  return out;
+}
+
+// Bright Data search for the rest. Searches that fail or time out come back in `failed`
+// so the caller can try them again instead of treating them as "not found".
+async function searchValues(base44: any, list: ValueTarget[], log: string[]): Promise<{ values: Map<string, Value>; failed: string[] }> {
+  const out = new Map<string, Value>();
+  const failed: string[] = [];
+  if (!list.length) return { values: out, failed };
+  const names = list.map((c) => c.name);
+  // The sector disambiguates common words (Bun the JS runtime, not a memecoin called Bun).
+  const described = list.map((c) => (c.sector ? `${c.name} (${c.sector})` : c.name));
+  const keyByName = new Map(list.map((c) => [norm(c.name), c.key]));
+  const t0 = Date.now();
+  const apiKey = secret("BRIGHTDATA_API_KEY");
+  const rules = `For each company below give its current market capitalization in USD if it is publicly traded, otherwise its latest reported valuation in USD. Use the most recent figure. Convert other currencies and units (e.g. "4.1T", "$126 billion") to plain USD numbers. Return 0 if no figure is stated or the results are about a different company or token with the same name (check the sector in brackets); never guess. Return every company, with its name exactly as given (without the bracketed sector).`;
+  let result: any;
+  if (apiKey) {
+    const serpZone = secret("BRIGHTDATA_SERP_ZONE") || "serp_api1";
+    const blocks: string[] = [];
+    await pool(list, async ({ key: k, name: n, sector }) => {
+      try {
+        const raw = await brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(`${n} ${sector || ""} market cap valuation`.replace(/ +/g, " "))}&hl=en&gl=us&num=8&brd_json=1`, {}, 30000);
+        const j = JSON.parse(raw);
+        const lines = [
+          ...[j.knowledge, j.answer_box, j.top_stories].filter(Boolean).map((x: any) => JSON.stringify(x).slice(0, 600)),
+          ...[...(j.organic || [])].slice(0, 6).map((o: any) => `${o.title || ""} — ${o.description || o.snippet || ""} (${o.link || o.url || ""})`),
+        ];
+        if (lines.length) blocks.push(`## ${n}\n${lines.join("\n")}`.slice(0, 2500));
+      } catch (err) {
+        failed.push(k);
+        log.push(`value search failed for ${n}: ${String(err).slice(0, 80)}`);
+      }
+    }, 6);
+    if (!blocks.length) return { values: out, failed };
+    result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt: `${rules} Use only the search results below, and give the URL of the result that states each figure.\n\nCompanies: ${described.join("; ")}\n\nSearch results:\n${blocks.join("\n\n")}`,
+      response_json_schema: VALUE_SCHEMA,
+    });
+  } else {
+    result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt: `${rules} Search the web and give the URL of the page that states each figure.\n\nCompanies: ${described.join("; ")}`,
+      response_json_schema: VALUE_SCHEMA,
+      add_context_from_internet: true,
+    });
+  }
+  for (const c of result?.companies || []) {
+    if (!(c?.value_usd >= 1e6)) continue;
+    if (!c.source_url) continue;
+    out.set(keyByName.get(norm(c.name)) || companyKey(c.name), { value_usd: c.value_usd, ...(c.as_of ? { as_of: String(c.as_of) } : {}), source_url: String(c.source_url) });
+  }
+  log.push(`values: ${out.size}/${names.length} market values found in ${Date.now() - t0}ms${failed.length ? `, ${failed.length} searches to retry` : ""}`);
+  return { values: out, failed };
+}
+
+const valuePatch = (v: Value & { ticker?: string }) => ({
+  value_usd: v.value_usd, value_as_of: v.as_of || "", value_source_url: v.source_url || "", value_source: v.source || "",
+  value_fetched: new Date().toISOString(), ...(v.ticker ? { ticker: v.ticker } : {}),
+});
+// A sourced value younger than VALUE_TTL_DAYS isn't searched again.
+const hasFreshValue = (c: any) => !!c?.value_source_url && !!c.value_fetched && Date.now() - Date.parse(c.value_fetched) < VALUE_TTL_DAYS * 864e5;
+
 Deno.serve(async (req) => {
   const started = Date.now();
   const log: string[] = [];
   try {
     const base44 = createClientFromRequest(req);
     const db = base44.asServiceRole.entities;
-    const { name: rawName, force = false } = await req.json();
+    const { name: rawName, force = false, action, keys: only } = await req.json();
+
+    // Background value fill, called by the app right after a map is shown: quotes for public
+    // companies, then a Bright Data search for the rest. A figure is only ever replaced by a
+    // newer sourced one; searches that failed come back in `retry`.
+    if (action === "fillValues") {
+      const all = await db.Company.list("-created_date", 5000);
+      const todo = all.filter((c: any) => c.kind !== "investor" && c.origin !== "seed" && !hasFreshValue(c) && (!only || only.includes(c.key)));
+      const target = (c: any): ValueTarget => ({ key: c.key, name: c.name.replace(/\s*\(.*\)/, ""), sector: c.sector, ticker: c.ticker });
+      const quotes = await quoteValues(todo.filter((c: any) => c.kind === "public").map(target), log);
+      const { values, failed } = await searchValues(base44, todo.filter((c: any) => !quotes.has(c.key)).map(target), log);
+      const updates = todo
+        .filter((c: any) => quotes.has(c.key) || values.has(c.key))
+        .map((c: any) => [c.id, valuePatch(quotes.get(c.key) || values.get(c.key)!)] as [string, any]);
+      await pool(updates, ([id, patch]) => db.Company.update(id, patch));
+      return Response.json({ todo: todo.length, filled: updates.length, retry: failed, log, ms: Date.now() - started });
+    }
     const name = String(rawName || "").trim().slice(0, 80);
     if (!name) return Response.json({ error: "name is required" }, { status: 400 });
     const key = companyKey(name);
@@ -455,16 +599,36 @@ Deno.serve(async (req) => {
     const relByKey = new Map(touching.map((r: any) => [r.key, r]));
     const changed = (found: any, patch: any) => Object.keys(patch).some((f) => found[f] !== patch[f]);
 
+    // Market values: quotes for public companies (a few seconds at most) and figures the
+    // articles state. Anything still missing is searched by the app in the background.
+    const kindOf = (k: string) => KNOWN_COMPANIES[k]?.kind || info[k]?.kind || companyByKey.get(k)?.kind || kinds[k] || "private";
+    const toQuote = [...keys].filter((k) => kindOf(k) === "public" && companyByKey.get(k)?.origin !== "seed" && !hasFreshValue(companyByKey.get(k)));
+    const quotes = await quoteValues(toQuote.map((k) => ({ key: k, name: nameFor(k).replace(/\s*\(.*\)/, ""), ticker: info[k]?.ticker || companyByKey.get(k)?.ticker })), log);
+    const stated = (k: string): Value | null => {
+      const c = info[k];
+      const d = docs && c?.value_usd > 0 ? docById.get(Number(c.value_doc_id)) : null;
+      return d && d.url !== "search-snippets" ? { value_usd: c.value_usd, source_url: d.url } : null;
+    };
+
     const newCompanies: any[] = [];
     const companyUpdates: [string, any][] = [];
     for (const k of keys) {
       const known = KNOWN_COMPANIES[k] || {};
-      const c = { ...known, ...info[k], kind: known.kind || info[k]?.kind, value_usd: info[k]?.value_usd || known.value_usd };
       const found = companyByKey.get(k);
+      const c = { ...info[k], kind: known.kind || info[k]?.kind };
+      // Order of trust: a stock quote, a figure an article states, a fresh sourced figure
+      // already saved, and only then the model's own unsourced figure (kept until the
+      // background search replaces it).
+      const sourced = quotes.get(k) || stated(k);
+      const value = found?.origin === "seed" ? {}
+        : sourced ? valuePatch(sourced)
+        : hasFreshValue(found) ? {}
+        : c.value_usd > 0 && !found?.value_source_url ? { value_usd: c.value_usd }
+        : {};
       const patch: any = {
         ...(c.kind ? { kind: c.kind } : {}),
         ...(c.sector ? { sector: c.sector } : {}),
-        ...(c.value_usd > 0 && !(found?.origin === "seed") ? { value_usd: c.value_usd } : {}),
+        ...value,
         ...(k === key ? { last_fetched: new Date().toISOString(), ...(c.description ? { description: c.description } : {}) } : {}),
       };
       if (found) {

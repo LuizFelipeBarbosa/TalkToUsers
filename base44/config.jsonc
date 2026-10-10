@@ -1,0 +1,14 @@
+// Base44 Project Configuration
+{
+  "name": "Ripple",
+  "description": "Company relationship graph and what-if risk propagation for VC analysts",
+
+  "visibility": "public",
+
+  "site": {
+    "installCommand": "npm install",
+    "buildCommand": "npm run build",
+    "serveCommand": "npm run dev",
+    "outputDirectory": "./dist"
+  }
+}

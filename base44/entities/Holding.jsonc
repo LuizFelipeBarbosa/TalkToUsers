@@ -1,0 +1,11 @@
+{
+  "name": "Holding",
+  "type": "object",
+  "description": "A company in the analyst's portfolio",
+  "properties": {
+    "company": { "type": "string", "description": "Company key" },
+    "name": { "type": "string" },
+    "stake_usd": { "type": "number", "description": "Fund's position size in USD" }
+  },
+  "required": ["company", "name"]
+}

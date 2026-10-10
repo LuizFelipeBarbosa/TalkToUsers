@@ -3,6 +3,7 @@
 // entity access rules are.
 
 import { createClientFromRequest } from "npm:@base44/sdk@0.8.41";
+import { canonicalGraph } from "../../shared/seed.js";
 
 Deno.serve(async (req) => {
   try {
@@ -26,7 +27,7 @@ Deno.serve(async (req) => {
           db.Relationship.list("-created_date", 5000),
           db.Holding.list("created_date", 500),
         ]);
-        return Response.json({ companies, relationships, holdings });
+        return Response.json(canonicalGraph({ companies, relationships, holdings }));
       }
     }
   } catch (err) {

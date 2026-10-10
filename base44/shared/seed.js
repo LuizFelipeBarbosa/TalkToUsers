@@ -142,7 +142,96 @@ const ALIASES = { cursor: "anysphere", anysphereinc: "anysphere", harvey: "harve
   a16z: "andreessenhorowitz", andreessen: "andreessenhorowitz", dst: "dstglobal", gv: "alphabet", googleventures: "alphabet", capitalg: "alphabet",
   dragoneerinvestment: "dragoneer", tigerglobalmanagement: "tigerglobal", trowepriceassociates: "troweprice", silverlakepartners: "silverlake",
   fidelityinvestments: "fidelity", fidelitymanagementresearch: "fidelity", fidelitymanagementandresearch: "fidelity", kpcb: "kleinerperkins", kleinerperkinscaufieldbyers: "kleinerperkins",
-  elementfleet: "elementfleetmanagement", toyotamotor: "toyota", toyotamotors: "toyota" };
+  elementfleet: "elementfleetmanagement", element: "elementfleetmanagement", toyotamotor: "toyota", toyotamotors: "toyota",
+  google: "alphabet", googleinvestment: "alphabet", mubadala: "mubadalainvestment", mubadalacapital: "mubadalainvestment" };
+
+// Well-known companies a live lookup often names without a market value (an owner, a
+// partner). Fills value_usd when the record has none, so a $4T parent isn't drawn as
+// an unknown dot; a `name` here replaces whatever name the lookup saved.
+// Approximate market caps, late 2026.
+export const KNOWN_COMPANIES = {
+  alphabet: { name: "Alphabet (Google)", kind: "public", value_usd: 4e12 },
+  apple: { kind: "public", value_usd: 4e12 },
+  amazon: { kind: "public", value_usd: 2.4e12 },
+  meta: { kind: "public", value_usd: 1.8e12 },
+  tsmc: { kind: "public", value_usd: 1.5e12 },
+  tesla: { kind: "public", value_usd: 1.4e12 },
+  berkshirehathaway: { kind: "public", value_usd: 1e12 },
+  walmart: { kind: "public", value_usd: 8e11 },
+  jpmorganchase: { kind: "public", value_usd: 8e11 },
+  tencent: { kind: "public", value_usd: 7e11 },
+  netflix: { kind: "public", value_usd: 4.5e11 },
+  samsung: { kind: "public", value_usd: 4e11 },
+  palantir: { kind: "public", value_usd: 4e11 },
+  alibaba: { kind: "public", value_usd: 3.5e11 },
+  salesforce: { kind: "public", value_usd: 2.5e11 },
+  ibm: { kind: "public", value_usd: 2.5e11 },
+  cisco: { kind: "public", value_usd: 2.7e11 },
+  toyota: { kind: "public", value_usd: 2.5e11 },
+  softbank: { kind: "public", value_usd: 2e11 },
+  qualcomm: { kind: "public", value_usd: 1.8e11 },
+  uber: { kind: "public", value_usd: 1.5e11 },
+  doordash: { kind: "public", value_usd: 1e11 },
+  generalmotors: { kind: "public", value_usd: 6e10 },
+  hyundaimotor: { kind: "public", value_usd: 5e10 },
+  ford: { kind: "public", value_usd: 4.5e10 },
+  magnainternational: { kind: "public", value_usd: 1.5e10 },
+  elementfleetmanagement: { name: "Element Fleet Management", kind: "public", value_usd: 1e10 },
+  autonation: { kind: "public", value_usd: 8e9 },
+  lyft: { kind: "public", value_usd: 5e9 },
+  mubadalainvestment: { name: "Mubadala Investment Company", kind: "investor" },
+};
+
+export const canonicalKey = (k) => ALIASES[k] || k;
+
+// Folds records saved under an alias (Google, Element, Mubadala Capital) into one company,
+// fills known market values, and merges the edges that then coincide.
+export function canonicalGraph({ companies, relationships, holdings = [] }) {
+  const byKey = new Map();
+  for (const c of companies) {
+    const key = canonicalKey(c.key);
+    const prev = byKey.get(key);
+    // The record already under the canonical key is the base; others only fill gaps.
+    const [base, extra] = !prev ? [c, {}] : c.key === key && prev.key !== key ? [c, prev] : [prev, c];
+    const merged = { ...base };
+    for (const f of Object.keys(extra)) if (merged[f] == null || merged[f] === "") merged[f] = extra[f];
+    byKey.set(key, { ...merged, key });
+  }
+  for (const [key, c] of byKey) {
+    const known = KNOWN_COMPANIES[key];
+    if (!known) continue;
+    byKey.set(key, { ...c, ...(known.name ? { name: known.name } : {}), kind: known.kind || c.kind, value_usd: c.value_usd || known.value_usd });
+  }
+
+  const rels = new Map();
+  const newer = (a, b) => String(a.date || "").localeCompare(String(b.date || "")) > 0;
+  for (const r of relationships) {
+    const source = canonicalKey(r.source);
+    const target = canonicalKey(r.target);
+    if (source === target) continue;
+    const key = `${source}|${r.type}|${target}`;
+    const prev = rels.get(key);
+    const e = { ...r, key, source, target };
+    if (!prev) rels.set(key, e);
+    else {
+      const [keep, other] = newer(e, prev) || (e.amount_usd && !prev.amount_usd) ? [e, prev] : [prev, e];
+      // The same investor's two rounds: one edge, the older round counted in the label.
+      if ((r.type === "venture" || r.type === "investment") && /round/.test(other.label || "") && !/earlier\)$/.test(keep.label || "")) {
+        keep.label = `${keep.label} (+1 earlier)`.slice(0, 90);
+      }
+      rels.set(key, keep);
+    }
+  }
+  // An owner that also invested is shown once, on the ownership edge.
+  const owned = new Set([...rels.values()].filter((r) => r.type === "owner").map((r) => `${r.source}|${r.target}`));
+  const relList = [...rels.values()].filter((r) => !((r.type === "venture" || r.type === "investment") && owned.has(`${r.source}|${r.target}`)));
+
+  const seenH = new Set();
+  const holdList = holdings
+    .map((h) => ({ ...h, company: canonicalKey(h.company) }))
+    .filter((h) => !seenH.has(h.company) && seenH.add(h.company));
+  return { companies: [...byKey.values()], relationships: relList, holdings: holdList };
+}
 
 export function companyKey(name) {
   const k = String(name || "")

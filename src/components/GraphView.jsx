@@ -43,6 +43,9 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [hoverEdge, setHoverEdge] = useState(null);
   const holdingSet = useMemo(() => new Set(holdings.map((h) => h.company)), [holdings]);
+  // Parents / majority owners get a ring in the owner-edge colour and at least a mid-size circle.
+  const ownerList = [...new Set(edges.filter((e) => e.type === "owner").map((e) => e.source))].sort().join("|");
+  const ownerSet = useMemo(() => new Set(ownerList.split("|").filter(Boolean)), [ownerList]);
 
   // Resize with the container.
   useEffect(() => {
@@ -58,7 +61,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
     () =>
       nodes.map((n) => {
         const p = posRef.current[n.key];
-        const o = { ...n, r: nodeRadius(n), x: p?.x, y: p?.y };
+        const o = { ...n, r: ownerSet.has(n.key) ? Math.max(24, nodeRadius(n)) : nodeRadius(n), x: p?.x, y: p?.y };
         if (o.x == null) {
           const ang = Math.random() * Math.PI * 2;
           o.x = size.w / 2 + Math.cos(ang) * 200;
@@ -67,7 +70,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
         return o;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [nodes],
+    [nodes, ownerSet],
   );
   const byKey = useMemo(() => Object.fromEntries(simNodes.map((n) => [n.key, n])), [simNodes]);
   const simLinks = useMemo(
@@ -227,14 +230,14 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
               <circle
                 r={n.r}
                 fill={impactFill(imp)}
-                stroke={isSel ? "#1c7ed6" : isHolding ? "#f08c00" : n.key === focus ? "#212529" : "#ced4da"}
-                strokeWidth={isSel ? 3.5 : isHolding ? 3 : n.key === focus ? 2.5 : 1.2}
+                stroke={isSel ? "#1c7ed6" : isHolding ? "#f08c00" : n.key === focus ? "#212529" : ownerSet.has(n.key) ? EDGE_TYPES.owner.color : "#ced4da"}
+                strokeWidth={isSel ? 3.5 : isHolding ? 3 : n.key === focus ? 2.5 : ownerSet.has(n.key) ? 3 : 1.2}
               />
               {isHolding && (
                 <text y={-n.r - 4} textAnchor="middle" fontSize={11} fill="#f08c00">★</text>
               )}
               <text textAnchor="middle" y={n.r > 22 ? -2 : n.r + 13} fontSize={n.r > 30 ? 13 : 11.5} fontWeight={n.r > 22 || n.key === focus ? 700 : 500} className="node-label" fill="#212529">
-                {n.name.replace(/\s*\(.*\)/, "")}
+                {n.r > 30 ? n.name : n.name.replace(/\s*\(.*\)/, "")}
               </text>
               {n.value_usd && n.r > 22 && (
                 <text textAnchor="middle" y={13} fontSize={11.5} fontWeight={600} className="node-label" fill="#495057">{fmtUsd(n.value_usd)}</text>

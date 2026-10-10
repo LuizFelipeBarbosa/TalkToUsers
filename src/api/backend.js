@@ -3,7 +3,7 @@
 // data so the app can be shown even with no network.
 
 import { base44 } from "@/api/base44Client";
-import { SEED_COMPANIES, SEED_RELATIONSHIPS, SEED_HOLDINGS, companyKey } from "../../base44/shared/seed.js";
+import { SEED_COMPANIES, SEED_RELATIONSHIPS, SEED_HOLDINGS, companyKey, canonicalGraph } from "../../base44/shared/seed.js";
 
 const params = new URLSearchParams(window.location.search);
 export const OFFLINE = params.get("offline") === "1" || !import.meta.env.VITE_BASE44_APP_ID;
@@ -19,7 +19,7 @@ const mem = {
 
 const offline = {
   async loadAll() {
-    return { companies: [...mem.companies], relationships: [...mem.relationships], holdings: [...mem.holdings] };
+    return canonicalGraph({ companies: [...mem.companies], relationships: [...mem.relationships], holdings: [...mem.holdings] });
   },
   async seed() {
     return { companies: 0, relationships: 0, holdings: 0 };

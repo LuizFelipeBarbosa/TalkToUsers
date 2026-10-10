@@ -7,7 +7,7 @@
 
 import { createClientFromRequest } from "npm:@base44/sdk@0.8.41";
 import { secrets } from "base44:runtime";
-import { companyKey } from "../../shared/seed.js";
+import { companyKey, KNOWN_COMPANIES } from "../../shared/seed.js";
 
 const TYPES = ["owner", "investment", "venture", "hardware", "cloud", "software", "acquisition", "partnership", "competitor"];
 const CACHE_HOURS = 72;
@@ -167,6 +167,8 @@ const EXTRACT_SCHEMA = {
           description: "Majority owner or parent company, only if a document states it",
           properties: {
             name: { type: "string" },
+            kind: { type: "string", enum: ["public", "private", "investor"] },
+            value_usd: { type: "number", description: "The parent's market cap or valuation in USD, 0 if unknown" },
             relation: { type: "string", description: "e.g. 'majority owner', 'parent company', 'wholly owned subsidiary of'" },
             doc_id: { type: "number" },
             evidence: { type: "string", description: "Short verbatim quote" },
@@ -231,7 +233,7 @@ function extractionPrompt(name: string, docs: Doc[] | null) {
   const rules = `You map business relationships for venture capital analysts.
 Company of interest: "${name}".
 Funding: put every funding round of "${name}" in funding_rounds and list EVERY investor the documents name for it, one name per entry: leads in lead_investors, everyone else ("with participation from", "existing investors", "also joined") in other_investors. If a document lists 15 investors, return all 15. The round total belongs to the round only, never to a single investor. Do not repeat round investors in relationships.
-Ownership: if a document says "${name}" is owned by, a subsidiary of, or majority-owned by another company, fill company.parent.
+Ownership: if a document says "${name}" is owned by, a subsidiary of, or majority-owned by another company, fill company.parent, including its kind and market value.
 List every other concrete relationship between "${name}" and another named company or investor in relationships: direct investments outside a round (type "investment" for corporate investors, "venture" for VC funds), acquisitions, purchases of chips/hardware ("hardware"), cloud or compute contracts ("cloud"), software/customer relationships ("software": the customer is the source, the vendor is the target), partnerships, and named competitors.
 Direction rule: source is who pays (investor, buyer, customer, acquirer); target is who receives the money.
 Use canonical company names (e.g. "Nvidia", not "NVIDIA Corporation"; "Andreessen Horowitz", not "a16z"). Add every investor and counterparty to counterparties with its kind. Skip people, governments and unnamed parties.
@@ -308,6 +310,9 @@ Deno.serve(async (req) => {
     const kinds: Record<string, string> = {};
     const info: Record<string, any> = {};
     for (const c of [result?.company, ...(result?.counterparties || [])]) if (c?.name) info[companyKey(c.name)] = c;
+    // The parent is often left out of counterparties; without this it would be saved with no value.
+    const p0 = result?.company?.parent;
+    if (p0?.name) info[companyKey(p0.name)] = { ...p0, ...info[companyKey(p0.name)], value_usd: info[companyKey(p0.name)]?.value_usd || p0.value_usd };
 
     // Where a claim comes from: the article URL and a confidence, or null if it isn't sourced.
     const sourceFor = (doc_id: any, evidence: string, mustName?: string) => {
@@ -438,6 +443,7 @@ Deno.serve(async (req) => {
     const direct = (n?: string) => !!n && norm(n).replace(/ /g, "").startsWith(k0(n));
     const k0 = (n: string) => companyKey(n).slice(0, 4);
     const nameFor = (k: string) => {
+      if (KNOWN_COMPANIES[k]?.name) return KNOWN_COMPANIES[k].name;
       if (k === key) return result?.company?.name || name;
       const options = [info[k]?.name, names[k], ...(result?.counterparties || []).filter((c: any) => companyKey(c?.name) === k).map((c: any) => c.name)].filter(Boolean);
       return options.find(direct) || options[0] || k;
@@ -452,7 +458,8 @@ Deno.serve(async (req) => {
     const newCompanies: any[] = [];
     const companyUpdates: [string, any][] = [];
     for (const k of keys) {
-      const c = info[k] || {};
+      const known = KNOWN_COMPANIES[k] || {};
+      const c = { ...known, ...info[k], kind: known.kind || info[k]?.kind, value_usd: info[k]?.value_usd || known.value_usd };
       const found = companyByKey.get(k);
       const patch: any = {
         ...(c.kind ? { kind: c.kind } : {}),

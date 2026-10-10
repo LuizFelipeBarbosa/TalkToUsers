@@ -116,13 +116,16 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
     `${name} parent company owner`,
     `${name} suppliers manufacturing partner cloud contract`,
     `${name} customers acquisitions investments deals`,
+    // The biggest commercial deals of a large company (multi-year compute or chip contracts)
+    // are news stories that the generic queries above rank below its funding coverage.
+    `${name} signs multi-year billion deal agreement`,
   ];
   const t0 = Date.now();
-  // Google via Bright Data sometimes hangs on one query: once three are back, wait at
-  // most 2 s for the last one, and never more than 14 s in all.
+  // Google via Bright Data sometimes hangs on one query: once all but one are back, wait
+  // at most 2 s for the last one, and never more than 14 s in all.
   const serps = await settleFast(
     queries.map((q) => brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, 14000)),
-    { enough: 3, graceMs: 2000, hardMs: 14000, label: "slow search skipped" },
+    { enough: queries.length - 1, graceMs: 2000, hardMs: 14000, label: "slow search skipped" },
   );
   const docs: Doc[] = [];
   const seen = new Set<string>();
@@ -179,7 +182,7 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
     if (p.status === "fulfilled") toRead[i].text = relevantText(p.value);
   });
   const read = toRead.filter((d) => d.text.length > 400).slice(0, MAX_ARTICLES);
-  log.push(`read: ${read.length}/${toRead.length} articles in ${Date.now() - t1}ms`);
+  log.push(`read: ${read.length}/${toRead.length} articles in ${Date.now() - t1}ms (${read.map((d) => host(d.url)).join(", ")})`);
 
   // Search snippets are evidence too (short, but cheap and often name the deal).
   read.push({ id: 99, url: "search-snippets", title: "Search result snippets", text: snippets.join("\n").slice(0, 6000) });

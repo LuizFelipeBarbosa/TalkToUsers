@@ -143,7 +143,9 @@ const ALIASES = { cursor: "anysphere", anysphereinc: "anysphere", harvey: "harve
   dragoneerinvestment: "dragoneer", tigerglobalmanagement: "tigerglobal", trowepriceassociates: "troweprice", silverlakepartners: "silverlake",
   fidelityinvestments: "fidelity", fidelitymanagementresearch: "fidelity", fidelitymanagementandresearch: "fidelity", kpcb: "kleinerperkins", kleinerperkinscaufieldbyers: "kleinerperkins",
   elementfleet: "elementfleetmanagement", element: "elementfleetmanagement", toyotamotor: "toyota", toyotamotors: "toyota",
-  google: "alphabet", googleinvestment: "alphabet", mubadala: "mubadalainvestment", mubadalacapital: "mubadalainvestment" };
+  google: "alphabet", googleinvestment: "alphabet",
+  // A company's cloud or venture arm is the company: its deals belong on the parent's node.
+  aws: "amazon", amazonaws: "amazon", amazonwebservices: "amazon", googlecloud: "alphabet", microsoftazure: "microsoft", azure: "microsoft", mubadala: "mubadalainvestment", mubadalacapital: "mubadalainvestment" };
 
 // Well-known companies a live lookup often names without a market value (an owner, a
 // partner). Fills value_usd when the record has none, so a $4T parent isn't drawn as

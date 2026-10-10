@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, Loader2, Zap, Briefcase, Network, AlertTriangle, ExternalLink, RefreshCw, X, Plus, Star, Tag } from "lucide-react";
 import GraphView from "@/components/GraphView";
 import { api, OFFLINE, companyKey } from "@/api/backend";
+import { canonicalGraph } from "../base44/shared/seed.js";
 import { EDGE_TYPES, fmtUsd, propagate, impactPath, findCircularFinancing, findSharedDependencies } from "@/lib/graph";
 
 const EXAMPLES = [
@@ -33,14 +34,34 @@ export default function App() {
   const [eventText, setEventText] = useState(EXAMPLES[0]);
   const [highlight, setHighlight] = useState(null); // {edges:Set, nodes:Set, title}
 
-  const reload = useCallback(async () => {
+  // Reloads can overlap (a lookup and the background value search both reload): only the
+  // most recently started one may replace the data, so an older, slower read never wipes
+  // out a company that was just mapped.
+  const reloadSeq = useRef(0);
+  const lastLookup = useRef(null);
+  const reload = useCallback(async (fresh) => {
+    const seq = ++reloadSeq.current;
+    if (fresh?.relationships) lastLookup.current = fresh;
+    const extra = lastLookup.current;
     let d = await api.loadAll();
     if (!OFFLINE && d.companies.length === 0) {
       await api.seed();
       d = await api.loadAll();
     }
-    setData(d);
-    setLoading(false);
+    // Records a lookup just saved, in case this read doesn't include them yet.
+    if (extra?.companies?.length || extra?.relationships?.length) {
+      const haveC = new Set(d.companies.map((c) => c.key));
+      const haveR = new Set(d.relationships.map((r) => r.key));
+      d = canonicalGraph({
+        companies: [...d.companies, ...(extra.companies || []).filter((c) => !haveC.has(c.key))],
+        relationships: [...d.relationships, ...(extra.relationships || []).filter((r) => !haveR.has(r.key))],
+        holdings: d.holdings,
+      });
+    }
+    if (seq === reloadSeq.current) {
+      setData(d);
+      setLoading(false);
+    }
     return d;
   }, []);
 
@@ -87,7 +108,7 @@ export default function App() {
     setHighlight(null);
     try {
       const res = await api.lookup(name.trim(), (step) => setLookup((l) => ({ ...l, step })), opts);
-      const d = await reload();
+      const d = await reload(res);
       const key = res?.key || companyKey(name);
       const n = d.relationships.filter((r) => r.source === key || r.target === key).length;
       setLookup({ name, done: true, result: res, count: n });

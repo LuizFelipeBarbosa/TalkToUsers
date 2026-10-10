@@ -39,6 +39,35 @@ async function brightData(apiKey: string, zone: string, url: string, extra: Reco
   return await res.text();
 }
 
+// Promise.allSettled that stops waiting early: when `enough` promises have fulfilled it
+// waits at most `graceMs` for the rest, and it never waits longer than `hardMs`.
+// Whatever is still pending then counts as rejected.
+function settleFast<T>(promises: Promise<T>[], { enough, graceMs, hardMs, label }: { enough: number; graceMs: number; hardMs: number; label: string }) {
+  return new Promise<PromiseSettledResult<T>[]>((resolve) => {
+    const out: (PromiseSettledResult<T> | undefined)[] = promises.map(() => undefined);
+    let settled = 0, ok = 0, done = false, grace: number | undefined;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(hard);
+      clearTimeout(grace);
+      resolve(out.map((r) => r || { status: "rejected", reason: new Error(label) }));
+    };
+    const hard = setTimeout(finish, hardMs);
+    promises.forEach((p, i) =>
+      p.then(
+        (value) => { out[i] = { status: "fulfilled", value }; ok++; },
+        (reason) => { out[i] = { status: "rejected", reason }; },
+      ).finally(() => {
+        settled++;
+        if (settled === promises.length) finish();
+        else if (ok >= enough && grace === undefined) grace = setTimeout(finish, graceMs);
+      }),
+    );
+    if (!promises.length) finish();
+  });
+}
+
 // One retry for quick failures (empty or bad responses); a timeout is not retried.
 async function brightDataRetry(apiKey: string, zone: string, url: string, extra: Record<string, unknown> = {}, timeoutMs = 30000) {
   const t0 = Date.now();
@@ -89,17 +118,11 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
     `${name} customers acquisitions investments deals`,
   ];
   const t0 = Date.now();
-  // Google via Bright Data sometimes hangs on one query: once one search is back,
-  // wait at most 10 s more for the others instead of the full timeout.
-  let lateCutoff: () => void = () => {};
-  const late = new Promise<never>((_, reject) => (lateCutoff = () => setTimeout(() => reject(new Error("slow search skipped")), 10000)));
-  late.catch(() => {});
-  const serps = await Promise.allSettled(
-    queries.map((q) => {
-      const p = brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, 35000);
-      p.then(() => lateCutoff(), () => {});
-      return Promise.race([p, late]);
-    }),
+  // Google via Bright Data sometimes hangs on one query: once three are back, wait at
+  // most 2 s for the last one, and never more than 14 s in all.
+  const serps = await settleFast(
+    queries.map((q) => brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, 14000)),
+    { enough: 3, graceMs: 2000, hardMs: 14000, label: "slow search skipped" },
   );
   const docs: Doc[] = [];
   const seen = new Set<string>();
@@ -147,8 +170,10 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
   // Read the top articles in parallel; keep whichever come back in time.
   const t1 = Date.now();
   const toRead = docs.slice(0, MAX_ARTICLES + 2);
-  const pages = await Promise.allSettled(
-    toRead.map((d) => brightData(apiKey, unlockerZone, d.url, { data_format: "markdown" }, 22000)),
+  // Once most pages are in, a slow site isn't worth holding the whole lookup for.
+  const pages = await settleFast(
+    toRead.map((d) => brightData(apiKey, unlockerZone, d.url, { data_format: "markdown" }, 12000)),
+    { enough: MAX_ARTICLES - 2, graceMs: 2000, hardMs: 12000, label: "slow page skipped" },
   );
   pages.forEach((p, i) => {
     if (p.status === "fulfilled") toRead[i].text = relevantText(p.value);
@@ -684,7 +709,13 @@ Deno.serve(async (req) => {
     await pool(edgeUpdates, ([id, patch]) => db.Relationship.update(id, patch));
     if (stale.length) log.push(`replaced: ${stale.length} outdated relationships`);
 
-    return Response.json({ key, cached: false, added: edges.length, log, ms: Date.now() - started });
+    // The saved records go back with the answer, so the app can draw them even if a
+    // read right after these writes doesn't see them yet.
+    const savedCompanies = [...keys].map((k) => {
+      const found = companyByKey.get(k);
+      return found ? { ...found, ...(companyUpdates.find(([id]) => id === found.id)?.[1] || {}) } : newCompanies.find((c) => c.key === k);
+    }).filter(Boolean);
+    return Response.json({ key, cached: false, added: edges.length, companies: savedCompanies, relationships: edges, log, ms: Date.now() - started });
   } catch (err) {
     console.error(err);
     return Response.json({ error: String((err as Error)?.message || err), log }, { status: 500 });

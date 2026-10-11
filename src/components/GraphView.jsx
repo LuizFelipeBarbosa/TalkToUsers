@@ -42,6 +42,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
   const [, setTick] = useState(0);
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [hoverEdge, setHoverEdge] = useState(null);
+  const [hoverNode, setHoverNode] = useState(null);
   const holdingSet = useMemo(() => new Set(holdings.map((h) => h.company)), [holdings]);
   // Parents / majority owners get a ring in the owner-edge colour and at least a mid-size circle.
   const ownerList = [...new Set(edges.filter((e) => e.type === "owner").map((e) => e.source))].sort().join("|");
@@ -61,7 +62,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
     () =>
       nodes.map((n) => {
         const p = posRef.current[n.key];
-        const o = { ...n, r: ownerSet.has(n.key) ? Math.max(24, nodeRadius(n)) : nodeRadius(n), x: p?.x, y: p?.y };
+        const o = { ...n, r: nodeRadius(n), x: p?.x, y: p?.y };
         if (o.x == null) {
           const ang = Math.random() * Math.PI * 2;
           o.x = size.w / 2 + Math.cos(ang) * 200;
@@ -89,6 +90,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
       .force("x", forceX(size.w / 2).strength(0.03))
       .force("y", forceY(size.h / 2).strength(0.04))
       .alpha(Object.keys(posRef.current).length ? 0.5 : 1)
+      .alphaDecay(0.035)
       .on("tick", () => {
         for (const n of simNodes) posRef.current[n.key] = { x: n.x, y: n.y };
         if (!fitted.current && sim.alpha() < 0.12) {
@@ -96,8 +98,11 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
           fitView();
         }
         setTick((t) => t + 1);
-      });
+      })
+      // Fit once more when the layout has fully settled, unless the user has panned or zoomed.
+      .on("end", () => fitted.current && !userZoomed.current && fitView());
     fitted.current = false;
+    userZoomed.current = false;
     simRef.current = sim;
     return () => sim.stop();
   }, [simNodes, simLinks, size.w, size.h]);
@@ -108,13 +113,17 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
     const z = d3zoom()
       .scaleExtent([0.2, 4])
       .filter((ev) => !ev.target.closest?.("[data-node]") && (ev.type !== "wheel" || true))
-      .on("zoom", (ev) => select(gRef.current).attr("transform", ev.transform));
+      .on("zoom", (ev) => {
+        if (ev.sourceEvent) userZoomed.current = true;
+        select(gRef.current).attr("transform", ev.transform);
+      });
     select(svgRef.current).call(z).on("dblclick.zoom", null);
     zoomRef.current = z;
   }, []);
 
   // Fit everything into view once the layout settles after a data change.
   const fitted = useRef(false);
+  const userZoomed = useRef(false);
   const fitView = () => {
     if (!simNodes.length || !zoomRef.current) return;
     const xs = simNodes.flatMap((n) => [n.x - n.r - 40, n.x + n.r + 40]);
@@ -157,6 +166,27 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
   };
 
   const impactMode = impacts && Object.keys(impacts).length > 0;
+
+  // Ripple animation: when a scenario starts, reveal its impact one hop at a time,
+  // outward from the company that was hit.
+  const [wave, setWave] = useState(Infinity);
+  useEffect(() => {
+    if (!impactMode) return setWave(Infinity);
+    const maxHop = Math.max(0, ...Object.values(impacts).map((i) => i.hops || 0));
+    if (!maxHop || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return setWave(Infinity);
+    setWave(0);
+    // The first hop waits a moment so the layout has mostly settled before the wave leaves.
+    let h = 0;
+    let id;
+    const step = () => {
+      h += 1;
+      setWave(h > maxHop ? Infinity : h);
+      if (h <= maxHop) id = setTimeout(step, 900);
+    };
+    id = setTimeout(step, 1400);
+    return () => clearTimeout(id);
+  }, [impacts, impactMode]);
+  const reached = (key) => impacts?.[key] && (impacts[key].hops || 0) <= wave;
   const focusSet = useMemo(() => {
     if (!focus) return null;
     const s = new Set([focus]);
@@ -168,6 +198,18 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
   }, [focus, edges]);
 
   const types = Object.keys(EDGE_TYPES);
+
+  // Deal callouts only on the few biggest deals (around the focus company, if any); the rest on hover.
+  const callouts = useMemo(() => {
+    const pool = simLinks.filter((e) => e.amount_usd && (!focus || e.source === focus || e.target === focus));
+    return new Set(pool.sort((a, b) => b.amount_usd - a.amount_usd).slice(0, 5).map((e) => e.key));
+  }, [simLinks, focus]);
+
+  // Only the biggest circles carry a name by default; the rest show it on hover.
+  const labelled = useMemo(() => {
+    const big = [...simNodes].filter((n) => !n.group).sort((a, b) => b.r - a.r).slice(0, 12);
+    return new Set(big.filter((n) => n.r >= 11).map((n) => n.key));
+  }, [simNodes]);
 
   return (
     <svg ref={svgRef} width={size.w} height={size.h} className="block select-none touch-none" onPointerMove={onPointerMove} onPointerUp={onPointerUp} onClick={(e) => e.target === svgRef.current && onSelect(null)}>
@@ -188,13 +230,13 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
           if (s?.x == null || t?.x == null) return null;
           const { d, mx, my } = arcPath(s, t, s.r, t.r, e.type === "competitor" ? 0.08 : 0.2);
           const meta = EDGE_TYPES[e.type] || EDGE_TYPES.partnership;
-          const hit = impactMode && edgesHit?.has(e.key);
+          const grouped = s.group || t.group;
+          const hit = impactMode && edgesHit?.has(e.key) && reached(e.source) && reached(e.target);
           const isSel = selected?.kind === "edge" && selected.key === e.key;
           const inFocus = !focusSet || (focusSet.has(e.source) && focusSet.has(e.target) && (e.source === focus || e.target === focus));
-          const dim = (impactMode && !hit) || (!impactMode && focusSet && !inFocus);
+          const dim = !grouped && ((impactMode && !hit) || (!impactMode && focusSet && !inFocus));
           const w = edgeWidth(e);
-          const touchesFocus = focus && (e.source === focus || e.target === focus);
-          const showLabel = (showLabels && !dim && e.amount_usd >= (touchesFocus ? 5e9 : 4e10)) || hoverEdge === e.key || isSel || (hit && e.amount_usd >= 5e9);
+          const showLabel = (showLabels && !dim && callouts.has(e.key)) || hoverEdge === e.key || isSel || (hit && e.amount_usd >= 5e9);
           return (
             <g key={e.key} opacity={dim ? 0.12 : 1} className="cursor-pointer" onMouseEnter={() => setHoverEdge(e.key)} onMouseLeave={() => setHoverEdge(null)} onClick={(ev) => { ev.stopPropagation(); onSelect({ kind: "edge", key: e.key }); }}>
               <path d={d} fill="none" stroke="transparent" strokeWidth={Math.max(10, w + 6)} />
@@ -211,8 +253,10 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
               />
               {showLabel && e.label && (
                 <text x={mx} y={my} textAnchor="middle" className="edge-label" fontSize={10.5} fill={hit ? "#a61e1e" : "#343a40"}>
-                  {e.amount_usd ? `${fmtUsd(e.amount_usd)} · ` : ""}
-                  {e.label.length > 48 ? e.label.slice(0, 46) + "…" : e.label}
+                  {/* Callouts show just the amount; the full description appears on hover or click. */}
+                  {hoverEdge === e.key || isSel || !e.amount_usd
+                    ? `${e.amount_usd ? `${fmtUsd(e.amount_usd)} · ` : ""}${e.label.length > 48 ? e.label.slice(0, 46) + "…" : e.label}`
+                    : fmtUsd(e.amount_usd)}
                 </text>
               )}
             </g>
@@ -220,25 +264,33 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
         })}
         {/* Nodes */}
         {simNodes.map((n) => {
-          const imp = impacts?.[n.key];
+          const rawImp = impacts?.[n.key];
+          const imp = rawImp && reached(n.key) ? rawImp : null;
           const isHolding = holdingSet.has(n.key);
           const isSel = selected?.kind === "node" && selected.key === n.key;
-          const dim = (impactMode && !imp) || (!impactMode && focusSet && !focusSet.has(n.key));
+          const dim = !n.group && ((impactMode && !rawImp) || (!impactMode && focusSet && !focusSet.has(n.key)));
+          const justHit = imp && wave !== Infinity && (imp.hops || 0) === wave;
+          const showName = n.group || labelled.has(n.key) || n.key === focus || isSel || isHolding || hoverNode === n.key || (imp && imp.value >= 0.15);
           return (
-            <g key={n.key} data-node transform={`translate(${n.x},${n.y})`} opacity={dim ? 0.25 : 1} className="cursor-pointer" onPointerDown={(ev) => onPointerDown(ev, n)}>
+            <g key={n.key} data-node transform={`translate(${n.x},${n.y})`} opacity={dim ? 0.25 : 1} className="cursor-pointer" onPointerDown={(ev) => onPointerDown(ev, n)} onMouseEnter={() => setHoverNode(n.key)} onMouseLeave={() => setHoverNode(null)}>
               {imp?.origin && !imp.mark && <circle r={n.r + 6} fill="none" stroke="#e03131" strokeWidth={2} className="pulse" />}
+              {imp?.origin && !imp.mark && wave !== Infinity && <circle key={`wave-${wave}`} r={n.r} fill="none" stroke={imp.sign < 0 ? "#e03131" : "#2f9e44"} strokeWidth={3} className="wave" vectorEffect="non-scaling-stroke" style={{ "--s": (n.r + 150) / n.r }} />}
+              {justHit && !imp.origin && <circle key={`burst-${wave}`} r={n.r} fill="none" stroke={imp.sign < 0 ? "#e03131" : "#2f9e44"} strokeWidth={2.5} className="burst" vectorEffect="non-scaling-stroke" />}
               <circle
                 r={n.r}
-                fill={impactFill(imp)}
-                stroke={isSel ? "#1c7ed6" : isHolding ? "#f08c00" : n.key === focus ? "#212529" : ownerSet.has(n.key) ? EDGE_TYPES.owner.color : "#ced4da"}
+                fill={n.group ? "#ffffff" : impactFill(imp)}
+                strokeDasharray={n.group ? "4 3" : undefined}
+                stroke={n.group ? "#868e96" : isSel ? "#1c7ed6" : isHolding ? "#f08c00" : n.key === focus ? "#212529" : ownerSet.has(n.key) ? EDGE_TYPES.owner.color : "#ced4da"}
                 strokeWidth={isSel ? 3.5 : isHolding ? 3 : n.key === focus ? 2.5 : ownerSet.has(n.key) ? 3 : 1.2}
               />
               {isHolding && (
                 <text y={-n.r - 4} textAnchor="middle" fontSize={11} fill="#f08c00">★</text>
               )}
-              <text textAnchor="middle" y={n.r > 22 ? -2 : n.r + 13} fontSize={n.r > 30 ? 13 : 11.5} fontWeight={n.r > 22 || n.key === focus ? 700 : 500} className="node-label" fill="#212529">
-                {n.r > 30 ? n.name : n.name.replace(/\s*\(.*\)/, "")}
-              </text>
+              {showName && (
+                <text textAnchor="middle" y={n.r > 22 ? -2 : n.r + 13} fontSize={n.r > 45 ? 15 : n.r > 30 ? 13 : 11.5} fontWeight={n.r > 22 || n.key === focus ? 700 : 500} className="node-label" fill={n.group ? "#495057" : "#212529"}>
+                  {n.r > 30 ? n.name : n.name.replace(/\s*\(.*\)/, "")}
+                </text>
+              )}
               {n.value_usd && n.r > 22 && (
                 <text textAnchor="middle" y={13} fontSize={11.5} fontWeight={600} className="node-label" fill="#495057">{fmtUsd(n.value_usd)}</text>
               )}

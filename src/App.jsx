@@ -20,6 +20,10 @@ const host = (u) => {
   }
 };
 
+const KEY_LINKS = 14; // counterparties drawn around the focus company before "All links"
+const MORE_PREFIX = "__more:";
+const IMPACT_NODES = 24; // most-affected companies drawn in a scenario before "All links"
+
 export default function App() {
   const [data, setData] = useState({ companies: [], relationships: [], holdings: [] });
   const [loading, setLoading] = useState(true);
@@ -27,6 +31,7 @@ export default function App() {
   const [selected, setSelected] = useState({ kind: "node", key: "openai" });
   const [showAll, setShowAll] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
+  const [allLinks, setAllLinks] = useState(false);
   const [tab, setTab] = useState("details");
   const [query, setQuery] = useState("");
   const [lookup, setLookup] = useState(null); // {name, step, error, result}
@@ -125,6 +130,8 @@ export default function App() {
       return { nodes: companies.filter((c) => used.has(c.key) || c.origin === "seed" || mine.has(c.key)), edges: bgEdges };
     }
     const keep = new Set([focus, ...Object.keys(scenario?.impacts || {}), ...Object.keys(highlight?.impacts || {})]);
+    if (!allLinks && (scenario?.impacts || highlight)) return impactView();
+    if (!allLinks) return keyLinks(keep);
     let frontier = [focus];
     for (let hop = 0; hop < 2; hop++) {
       const next = [];
@@ -144,7 +151,75 @@ export default function App() {
       nodes: companies.filter((c) => keep.has(c.key)),
       edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target) && (e.source === focus || e.target === focus || shown(e))),
     };
-  }, [showAll, companies, edges, focus, byKey, scenario, highlight, mine, cleared]);
+  }, [showAll, allLinks, companies, edges, focus, byKey, scenario, highlight, mine, cleared, holdingKeys]);
+  useEffect(() => setAllLinks(false), [focus, scenario?.impacts, highlight]);
+
+  // Scenario / highlight view: only the companies the shock reaches (the most affected,
+  // plus the chain that connects each back to the origin) and the lines it travels along.
+  function impactView() {
+    const imp = highlight ? highlight.impacts : scenario.impacts;
+    const hit = (highlight ? highlight.edges : scenario.edgesHit) || new Set();
+    const weight = ([, v]) => (v.origin ? 2 : 0) + v.value;
+    const ranked = Object.entries(imp).filter(([k]) => byKey[k]).sort((a, b) => weight(b) - weight(a));
+    const keep = new Set();
+    for (const [k] of ranked.slice(0, IMPACT_NODES)) {
+      for (let cur = k; cur && !keep.has(cur); cur = imp[cur]?.via) keep.add(cur);
+    }
+    const nodes = companies.filter((c) => keep.has(c.key));
+    const out = edges.filter((e) => hit.has(e.key) && keep.has(e.source) && keep.has(e.target));
+    const rest = ranked.length - keep.size;
+    const origin = ranked.find(([, v]) => v.origin)?.[0];
+    if (rest > 0 && origin) {
+      const key = `${MORE_PREFIX}affected`;
+      nodes.push({ key, name: `+${rest} more affected`, group: true, r_fixed: 17 });
+      out.push({ key, source: origin, target: key, type: "partnership" });
+    }
+    return { nodes, edges: out };
+  }
+
+  // Default focus view: only the focus company's most important counterparties (biggest
+  // deals, then biggest companies), with the rest folded into "+N investors" / "+N more"
+  // circles that expand to every link when clicked.
+  function keyLinks(keep) {
+    const holdingSet = new Set(holdingKeys);
+    const direct = {};
+    for (const e of edges) {
+      if (e.source !== focus && e.target !== focus) continue;
+      const o = e.source === focus ? e.target : e.source;
+      (direct[o] ||= []).push(e);
+    }
+    const score = (o) => {
+      const es = direct[o];
+      const c = byKey[o];
+      const amount = Math.max(0, ...es.map((e) => e.amount_usd || 0));
+      const pinned = holdingSet.has(o) || es.some((e) => e.type === "owner") || mine.has(o);
+      return (pinned ? 1e16 : 0) + amount + 0.05 * (c?.value_usd || 0);
+    };
+    const ranked = Object.keys(direct).sort((a, b) => score(b) - score(a));
+    const isMinorInvestor = (o) => byKey[o]?.kind === "investor" && !direct[o].some((e) => e.amount_usd) && score(o) < 1e16;
+    const top = ranked.filter((o) => !isMinorInvestor(o)).slice(0, KEY_LINKS);
+    for (const o of top) keep.add(o);
+    const nodes = companies.filter((c) => keep.has(c.key));
+    // One line per pair of companies (the biggest deal); every deal is still listed in the side panel.
+    const pairs = {};
+    for (const e of edges) {
+      if (!keep.has(e.source) || !keep.has(e.target)) continue;
+      if (e.source !== focus && e.target !== focus && !(shown(e) && e.type !== "competitor" && e.amount_usd >= 1e9)) continue;
+      const pk = [e.source, e.target].sort().join("|");
+      if (!pairs[pk] || (e.amount_usd || 0) > (pairs[pk].amount_usd || 0)) pairs[pk] = e;
+    }
+    const out = Object.values(pairs);
+    const rest = ranked.filter((o) => !keep.has(o));
+    const investors = rest.filter(isMinorInvestor);
+    const others = rest.filter((o) => !isMinorInvestor(o));
+    for (const [id, list, label, type] of [["investors", investors, "investors", "venture"], ["more", others, "more", "partnership"]]) {
+      if (!list.length) continue;
+      const key = `${MORE_PREFIX}${id}`;
+      nodes.push({ key, name: `+${list.length} ${label}`, group: true, r_fixed: 17 });
+      out.push({ key, source: type === "venture" ? key : focus, target: type === "venture" ? focus : key, type });
+    }
+    return { nodes, edges: out };
+  }
 
   const runLookup = async (name, opts) => {
     if (!name.trim()) return;
@@ -315,6 +390,7 @@ export default function App() {
               focus={scenario?.impacts || highlight ? null : focus}
               selected={selected}
               onSelect={(s) => {
+                if (s?.key?.startsWith(MORE_PREFIX)) return setAllLinks(true);
                 setSelected(s);
                 if (s) setTab("details");
               }}
@@ -343,6 +419,11 @@ export default function App() {
             <label className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-1 border border-slate-200">
               <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show whole map
             </label>
+            {!showAll && (
+              <label className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-1 border border-slate-200">
+                <input type="checkbox" checked={allLinks} onChange={(e) => setAllLinks(e.target.checked)} /> All links
+              </label>
+            )}
             <label className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-1 border border-slate-200">
               <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Deal callouts
             </label>

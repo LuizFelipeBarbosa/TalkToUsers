@@ -34,9 +34,16 @@ export function fmtUsd(n) {
   return `$${n}`;
 }
 
+// Circle area is proportional to company value on one fixed scale, so a $5T company is
+// visibly ~40x the area of a $100B one and every view compares the same way. Small or
+// unknown companies keep a minimum area so they stay clickable.
+const R_MIN = 8;
+const R_MAX = 72; // radius of a $5T company
+const V_MAX = 5e12;
 export function nodeRadius(node) {
-  const b = (node.value_usd || 0) / 1e9;
-  return node.kind === "investor" && !node.value_usd ? 9 : 9 + 8.5 * Math.log10(b + 1);
+  if (node.r_fixed) return node.r_fixed;
+  const v = Math.min(node.value_usd || 0, V_MAX * 1.2);
+  return Math.sqrt(R_MIN * R_MIN + ((R_MAX * R_MAX - R_MIN * R_MIN) * v) / V_MAX);
 }
 
 export function edgeWidth(edge) {

@@ -154,7 +154,7 @@ const ALIASES = { cursor: "anysphere", anysphereinc: "anysphere", harvey: "harve
 export const KNOWN_COMPANIES = {
   alphabet: { name: "Alphabet (Google)", kind: "public", value_usd: 4e12 },
   apple: { kind: "public", value_usd: 4e12 },
-  amazon: { kind: "public", value_usd: 2.4e12 },
+  amazon: { name: "Amazon", kind: "public", value_usd: 2.4e12 },
   meta: { kind: "public", value_usd: 1.8e12 },
   tsmc: { kind: "public", value_usd: 1.5e12 },
   tesla: { kind: "public", value_usd: 1.4e12 },

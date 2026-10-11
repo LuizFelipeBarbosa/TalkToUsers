@@ -16,6 +16,7 @@
     "source_url": { "type": "string", "description": "Article the relationship was taken from" },
     "evidence": { "type": "string", "description": "Short quote from the source supporting the relationship" },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "prefilled": { "type": "boolean", "description": "Found only by the cache pre-fill: drawn only around a company someone searched" },
     "origin": { "type": "string", "enum": ["seed", "live", "llm_web"], "default": "live" }
   },
   "required": ["key", "source", "target", "type"]

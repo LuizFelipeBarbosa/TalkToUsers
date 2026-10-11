@@ -15,6 +15,7 @@
     "ticker": { "type": "string", "description": "Stock ticker, for public companies" },
     "description": { "type": "string" },
     "last_fetched": { "type": "string", "description": "ISO time of the last live lookup; empty for seed-only companies" },
+    "searched": { "type": "boolean", "description": "Someone looked it up in the app (not just the cache pre-fill)" },
     "prefilled": { "type": "boolean", "description": "Mapped by the deep cache pre-fill: kept for good, never re-searched unless forced" },
     "origin": { "type": "string", "enum": ["seed", "live"], "default": "live" }
   },

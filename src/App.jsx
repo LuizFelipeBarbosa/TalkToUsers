@@ -81,14 +81,22 @@ export default function App() {
 
   // What is drawn: the focus company's 2-hop neighbourhood (plus anything a scenario
   // touched), or the whole map when "Show whole map" is on.
+  // Links found only by the cache pre-fill are left off the map unless they touch a company
+  // someone searched (or the one in focus), so the pre-fill doesn't clutter the background.
+  const shown = (e) => !e.prefilled || byKey[e.source]?.searched || byKey[e.target]?.searched;
   const visible = useMemo(() => {
-    if (showAll || !focus || !byKey[focus]) return { nodes: companies, edges };
+    if (showAll || !focus || !byKey[focus]) {
+      const bgEdges = edges.filter(shown);
+      const used = new Set(bgEdges.flatMap((e) => [e.source, e.target]));
+      return { nodes: companies.filter((c) => used.has(c.key) || c.origin === "seed" || c.searched), edges: bgEdges };
+    }
     const keep = new Set([focus, ...Object.keys(scenario?.impacts || {}), ...Object.keys(highlight?.impacts || {})]);
     let frontier = [focus];
     for (let hop = 0; hop < 2; hop++) {
       const next = [];
       for (const e of edges) {
         if (e.type === "competitor" && hop > 0) continue;
+        if (hop > 0 && !shown(e)) continue;
         for (const [a, b] of [[e.source, e.target], [e.target, e.source]]) {
           if (frontier.includes(a) && !keep.has(b)) {
             keep.add(b);
@@ -98,7 +106,10 @@ export default function App() {
       }
       frontier = next;
     }
-    return { nodes: companies.filter((c) => keep.has(c.key)), edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target)) };
+    return {
+      nodes: companies.filter((c) => keep.has(c.key)),
+      edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target) && (e.source === focus || e.target === focus || shown(e))),
+    };
   }, [showAll, companies, edges, focus, byKey, scenario, highlight]);
 
   const runLookup = async (name, opts) => {

@@ -479,6 +479,8 @@ Deno.serve(async (req) => {
     // A pre-filled company never expires: it was mapped thoroughly on purpose.
     if (!force && existing?.last_fetched && (existing.prefilled || Date.now() - Date.parse(existing.last_fetched) < CACHE_HOURS * 3600e3)) {
       log.push("cache hit");
+      // Someone searched it: from now on its links belong on the background map too.
+      if (!deep && !existing.searched) await db.Company.update(existing.id, { searched: true });
       return Response.json({ key, cached: true, log, ms: Date.now() - started });
     }
 
@@ -543,6 +545,8 @@ Deno.serve(async (req) => {
       if (byKey.has(e.key)) return false;
       names[e.source] ||= sourceName;
       names[e.target] ||= targetName;
+      // Links found only by the cache pre-fill are drawn only around the company searched.
+      e.prefilled = deep;
       byKey.set(e.key, e);
       edges.push(e);
       return true;
@@ -684,7 +688,7 @@ Deno.serve(async (req) => {
         ...(c.kind ? { kind: c.kind } : {}),
         ...(c.sector ? { sector: c.sector } : {}),
         ...value,
-        ...(k === key ? { last_fetched: new Date().toISOString(), ...(deep ? { prefilled: true } : {}), ...(c.description ? { description: c.description } : {}) } : {}),
+        ...(k === key ? { last_fetched: new Date().toISOString(), ...(deep ? { prefilled: true } : { searched: true }), ...(c.description ? { description: c.description } : {}) } : {}),
       };
       if (found) {
         // Fix a name that was saved under an alias on an earlier lookup.
@@ -700,6 +704,8 @@ Deno.serve(async (req) => {
     const edgeDeletes: string[] = [];
     for (const e of edges) {
       const found = relByKey.get(e.key);
+      // A link someone already found by searching stays on the background map.
+      if (found?.prefilled === false) e.prefilled = false;
       if (!found) newEdges.push(e);
       else if (found.origin === "seed") continue;
       else if (found.amount_usd && !e.amount_usd) {
@@ -715,6 +721,14 @@ Deno.serve(async (req) => {
     const fresh = new Set(edges.map((e) => e.key));
     const stale = touching.filter((r: any) => r.origin !== "seed" && !fresh.has(r.key) && (pairs.has(`${r.source}|${r.target}`) || (UNDIRECTED.has(r.type) && pairs.has(`${r.target}|${r.source}`))));
     edgeDeletes.push(...stale.map((r: any) => r.id));
+    // The pre-fill also flags older unflagged links of this company: any that came from
+    // someone's search touch a company marked searched, so they stay on the map anyway.
+    if (deep) {
+      const handled = new Set([...edgeDeletes, ...edgeUpdates.map(([id]) => id)]);
+      for (const r of touching) {
+        if (r.origin !== "seed" && r.prefilled == null && !handled.has(r.id) && !fresh.has(r.key)) edgeUpdates.push([r.id, { prefilled: true }]);
+      }
+    }
 
     if (newCompanies.length) await db.Company.bulkCreate(newCompanies);
     await pool(companyUpdates, ([id, patch]) => db.Company.update(id, patch));

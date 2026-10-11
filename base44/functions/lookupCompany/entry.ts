@@ -109,10 +109,11 @@ function relevantText(text: string, max = ARTICLE_CHARS) {
 
 type Doc = { id: number; url: string; title: string; text: string };
 
-// `deep` is for pre-filling the cache, where nobody is waiting: read twice as many
-// articles and wait for slow searches and pages instead of skipping them.
+// `deep` is for pre-filling the cache, where nobody is waiting: read more articles and
+// wait for slow searches and pages instead of skipping them. (A stronger extraction model
+// took ~2 min on 16 articles and pushed big companies past the function time limit.)
 async function searchAndRead(name: string, log: string[], deep = false): Promise<Doc[]> {
-  const MAX_ARTICLES = deep ? 16 : MAX_ARTICLES_FAST;
+  const MAX_ARTICLES = deep ? 14 : MAX_ARTICLES_FAST;
   const apiKey = secret("BRIGHTDATA_API_KEY")!;
   const serpZone = secret("BRIGHTDATA_SERP_ZONE") || "serp_api1";
   const unlockerZone = secret("BRIGHTDATA_UNLOCKER_ZONE") || "web_unlocker1";
@@ -492,9 +493,6 @@ Deno.serve(async (req) => {
     const t2 = Date.now();
     const result: any = await base44.asServiceRole.integrations.Core.InvokeLLM({
       prompt: extractionPrompt(name, docs),
-      // A stronger model finds more relationships in long articles but takes longer, so
-      // only the cache pre-fill uses it; live searches keep the app's default.
-      ...(deep ? { model: "claude-sonnet-5" } : {}),
       response_json_schema: EXTRACT_SCHEMA,
       ...(docs ? {} : { add_context_from_internet: true }),
     });

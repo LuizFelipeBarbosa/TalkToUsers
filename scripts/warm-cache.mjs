@@ -1,5 +1,5 @@
 // Pre-runs live lookups for companies likely to be searched at an SF hackathon, so the
-// app answers them from the cache. Runs in deep mode (more articles, stronger model),
+// app answers them from the cache. Runs in deep mode (more articles, no early cutoffs),
 // which only the deployed function version with `deep` support honours. Already-cached companies are skipped unless --force.
 //   node scripts/warm-cache.mjs [--force] [Name ...]
 import { createClient } from "@base44/sdk";
@@ -27,8 +27,16 @@ async function worker() {
     const name = names[i++];
     const t0 = Date.now();
     try {
-      const res = (await base44.functions.invoke("lookupCompany", { name, force, deep: true })).data;
-      if (res?.error) throw new Error(res.error);
+      let res;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          res = (await base44.functions.invoke("lookupCompany", { name, force, deep: true })).data;
+          if (res?.error) throw new Error(res.error);
+          break;
+        } catch (e) {
+          if (attempt >= 1) throw e;
+        }
+      }
       touched.add(res.key);
       for (const r of res.relationships || []) touched.add(r.source), touched.add(r.target);
       console.log(`${name}: ${res.cached ? "cached" : `${res.added} relationships`} in ${((Date.now() - t0) / 1000).toFixed(0)}s`);

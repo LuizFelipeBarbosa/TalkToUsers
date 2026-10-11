@@ -41,6 +41,22 @@ export default function App() {
       return new Set();
     }
   });
+  const [cleared, setCleared] = useState(() => {
+    try {
+      return localStorage.getItem("ripple.cleared") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const clearSearches = () => {
+    setMine(new Set());
+    setCleared(true);
+    setLookup(null);
+    try {
+      localStorage.setItem("ripple.searched", "[]");
+      localStorage.setItem("ripple.cleared", "1");
+    } catch {}
+  };
   const remember = (key) =>
     setMine((m) => {
       if (m.has(key)) return m;
@@ -100,7 +116,8 @@ export default function App() {
   // touched), or the whole map when "Show whole map" is on.
   // Links found only by the cache pre-fill are left off the map unless they touch the company
   // in focus or one searched in this browser, so the pre-fill doesn't clutter the background.
-  const shown = (e) => !e.prefilled || mine.has(e.source) || mine.has(e.target);
+  // After "Clear searches" only the seed links and later searches stay in the background.
+  const shown = (e) => mine.has(e.source) || mine.has(e.target) || (cleared ? e.origin === "seed" : !e.prefilled);
   const visible = useMemo(() => {
     if (showAll || !focus || !byKey[focus]) {
       const bgEdges = edges.filter(shown);
@@ -127,7 +144,7 @@ export default function App() {
       nodes: companies.filter((c) => keep.has(c.key)),
       edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target) && (e.source === focus || e.target === focus || shown(e))),
     };
-  }, [showAll, companies, edges, focus, byKey, scenario, highlight, mine]);
+  }, [showAll, companies, edges, focus, byKey, scenario, highlight, mine, cleared]);
 
   const runLookup = async (name, opts) => {
     if (!name.trim()) return;
@@ -329,6 +346,9 @@ export default function App() {
             <label className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-1 border border-slate-200">
               <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Deal callouts
             </label>
+            <button className="text-left bg-white/90 rounded px-2 py-1 border border-slate-200 hover:bg-slate-50" onClick={clearSearches} title="Remove earlier searches from the faded background">
+              Clear searches
+            </button>
           </div>
         </div>
 

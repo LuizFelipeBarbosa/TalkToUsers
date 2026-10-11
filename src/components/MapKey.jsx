@@ -61,8 +61,7 @@ export default function MapKey({ compact, open, onOpenChange, minDeal, onMinDeal
     <div style={style} className={`glass fade-in absolute z-20 rounded-2xl p-3 ${compact ? "w-[min(340px,calc(100%-84px))]" : "w-[400px]"}`}>
       <div className="flex items-start gap-2">
         <h2 className="min-w-0 flex-1 text-[13.5px] leading-tight">
-          <span className="font-semibold">Ripple</span>
-          <span className="text-label-2"> · Who funds and supplies whom</span>
+          <span className="font-semibold">How to read the map</span>
         </h2>
         <button aria-label="Hide the key" title="Hide the key" onClick={() => onOpenChange(false)} className="-mr-1 -mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-full text-label-2 hover:bg-fill/[0.14] hover:text-label">
           <ChevronDown className="h-4 w-4" />

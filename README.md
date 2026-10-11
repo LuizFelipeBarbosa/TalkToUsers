@@ -1,4 +1,4 @@
-# Ripple
+# Orbit
 
 Type any company and get a map of who it is connected to (investors, customers, suppliers, acquisitions), built live from the web with sources on every line. Then ask "what if" and watch the shock travel through the map to your portfolio.
 

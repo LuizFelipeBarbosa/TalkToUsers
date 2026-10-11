@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import GraphView from "@/components/GraphView";
 import CommandBar from "@/components/CommandBar";
+import Brand from "@/components/Brand";
 import MapKey, { useMapKeyOpen } from "@/components/MapKey";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import Details from "@/components/panels/Details";
@@ -399,7 +400,7 @@ export default function App() {
           )}
           <CommandBar
             ref={searchRef}
-            className="absolute left-1/2 top-3 z-20 w-[min(520px,calc(100%-300px))] -translate-x-1/2"
+            className="absolute left-1/2 top-3 z-20 w-[min(480px,calc(100%-560px))] -translate-x-1/2"
             companies={companies}
             examples={EXAMPLES}
             lookup={lookup}
@@ -424,7 +425,8 @@ export default function App() {
             onMinValue={setMinValue}
             stats={`${companies.length} companies · ${edges.length} relationships${OFFLINE ? " · offline demo data" : ""}`}
           />
-          <div className="absolute top-3 left-3 flex flex-col gap-1.5 text-xs">
+          <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-1.5 text-xs">
+            <Brand className="mb-1.5" />
             <label className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-1 border border-slate-200">
               <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show whole map
             </label>

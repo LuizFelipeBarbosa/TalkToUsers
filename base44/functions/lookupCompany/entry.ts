@@ -74,6 +74,31 @@ function settleFast<T>(promises: Promise<T>[], { enough, graceMs, hardMs, label 
   });
 }
 
+// The one known key within a typo's reach of `key` (edit distance 1, or 2 for longer
+// names (8+ letters), counting a swap of neighbouring letters as one edit); none if it's ambiguous.
+function closestKey(key: string, keys: string[]): string | null {
+  const max = key.length >= 8 ? 2 : 1;
+  const dist = (a: string, b: string) => {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+    return d[a.length][b.length];
+  };
+  let best: string | null = null, bestD = max + 1, tie = false;
+  for (const k of keys) {
+    const dd = dist(key, k);
+    if (dd < bestD) [best, bestD, tie] = [k, dd, false];
+    else if (dd === bestD) tie = true;
+  }
+  return best && !tie ? best : null;
+}
+
 // One retry for quick failures (empty or bad responses); a timeout is not retried.
 async function brightDataRetry(apiKey: string, zone: string, url: string, extra: Record<string, unknown> = {}, timeoutMs = 30000) {
   const t0 = Date.now();
@@ -470,12 +495,34 @@ Deno.serve(async (req) => {
       await pool(updates, ([id, patch]) => db.Company.update(id, patch));
       return Response.json({ todo: todo.length, filled: updates.length, retry: failed, log, ms: Date.now() - started });
     }
-    const name = String(rawName || "").trim().slice(0, 80);
+    let name = String(rawName || "").trim().slice(0, 80);
     if (!name) return Response.json({ error: "name is required" }, { status: 400 });
-    const key = companyKey(name);
+    const typed = companyKey(name);
+    let key = typed;
+    let existing = (await db.Company.filter({ key }))[0];
+    // A misspelling ("nvdia") resolves to the company already on the map instead of
+    // starting a new one; whatever an earlier lookup saved under the misspelling goes.
+    // A misspelling saved by an earlier lookup only gives way to a well-mapped company
+    // (pre-filled or built in), so two real companies a letter apart don't merge.
+    if (key.length >= 5 && !(existing && (existing.origin === "seed" || existing.prefilled))) {
+      const all = await db.Company.list("-created_date", 5000);
+      const known = (c: any) => existing?.last_fetched ? c.prefilled || c.origin === "seed" : c.last_fetched;
+      const near = closestKey(key, all.filter((c: any) => c.key !== key && known(c)).map((c: any) => c.key));
+      if (near) {
+        log.push(`"${name}" read as ${near}`);
+        key = near;
+        const stray = existing;
+        existing = all.find((c: any) => c.key === near);
+        name = existing?.name?.replace(/\s*\(.*\)/, "") || name;
+        if (stray && stray.origin !== "seed") {
+          const strayEdges = [...(await db.Relationship.filter({ source: typed })), ...(await db.Relationship.filter({ target: typed }))];
+          await pool(strayEdges, (r: any) => db.Relationship.delete(r.id), 5);
+          await db.Company.delete(stray.id);
+        }
+      }
+    }
 
     // Cache: a recent live lookup is reused unless the analyst forces a refresh.
-    const existing = (await db.Company.filter({ key }))[0];
     // A pre-filled company never expires: it was mapped thoroughly on purpose.
     if (!force && existing?.last_fetched && (existing.prefilled || Date.now() - Date.parse(existing.last_fetched) < CACHE_HOURS * 3600e3)) {
       log.push("cache hit");

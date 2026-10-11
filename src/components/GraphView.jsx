@@ -4,6 +4,10 @@ import { select } from "d3-selection";
 import { zoom as d3zoom, zoomIdentity } from "d3-zoom";
 import { EDGE_TYPES, edgeWidth, nodeRadius, fmtUsd } from "@/lib/graph";
 
+function baseLabelSize(n) {
+  return n.r > 45 ? 15 : n.r > 30 ? 13 : n.r > 14 ? 11.5 : 9.5;
+}
+
 function impactFill(imp) {
   if (!imp) return "#f1f3f5";
   if (imp.mark) return "#ffd8a8";
@@ -43,6 +47,9 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [hoverEdge, setHoverEdge] = useState(null);
   const [hoverNode, setHoverNode] = useState(null);
+  const [zoomK, setZoomK] = useState(1);
+  // Names never shrink below ~9px on screen, however far the map is zoomed out.
+  const labelSize = (n) => Math.max(baseLabelSize(n), 9 / Math.max(zoomK, 0.05));
   const holdingSet = useMemo(() => new Set(holdings.map((h) => h.company)), [holdings]);
   // Parents / majority owners get a ring in the owner-edge colour and at least a mid-size circle.
   const ownerList = [...new Set(edges.filter((e) => e.type === "owner").map((e) => e.source))].sort().join("|");
@@ -103,6 +110,17 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
       .on("end", () => fitted.current && !userZoomed.current && fitView());
     fitted.current = false;
     userZoomed.current = false;
+    // Lay the graph out up front (cheap for a few hundred nodes), so circles appear in place
+    // instead of flying around while a scenario's ripple plays; the rest settles gently.
+    sim.stop();
+    for (let i = 0; i < 300 && sim.alpha() > 0.04; i++) sim.tick();
+    for (const n of simNodes) posRef.current[n.key] = { x: n.x, y: n.y };
+    if (zoomRef.current) {
+      fitted.current = true;
+      fitView();
+    }
+    setTick((t) => t + 1);
+    sim.restart();
     simRef.current = sim;
     return () => sim.stop();
   }, [simNodes, simLinks, size.w, size.h]);
@@ -115,6 +133,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
       .filter((ev) => !ev.target.closest?.("[data-node]") && (ev.type !== "wheel" || true))
       .on("zoom", (ev) => {
         if (ev.sourceEvent) userZoomed.current = true;
+        setZoomK(Math.round(ev.transform.k * 20) / 20);
         select(gRef.current).attr("transform", ev.transform);
       });
     select(svgRef.current).call(z).on("dblclick.zoom", null);
@@ -183,7 +202,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
       setWave(h > maxHop ? Infinity : h);
       if (h <= maxHop) id = setTimeout(step, 900);
     };
-    id = setTimeout(step, 1400);
+    id = setTimeout(step, 600);
     return () => clearTimeout(id);
   }, [impacts, impactMode]);
   const reached = (key) => impacts?.[key] && (impacts[key].hops || 0) <= wave;
@@ -205,11 +224,24 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
     return new Set(pool.sort((a, b) => b.amount_usd - a.amount_usd).slice(0, 5).map((e) => e.key));
   }, [simLinks, focus]);
 
-  // Only the biggest circles carry a name by default; the rest show it on hover.
-  const labelled = useMemo(() => {
-    const big = [...simNodes].filter((n) => !n.group).sort((a, b) => b.r - a.r).slice(0, 12);
-    return new Set(big.filter((n) => n.r >= 11).map((n) => n.key));
-  }, [simNodes]);
+  // Every circle gets its name unless it would overlap a bigger company's label
+  // (bigger companies claim their space first); hidden names still show on hover.
+  const labelled = new Set();
+  {
+    const boxes = [];
+    for (const n of [...simNodes].sort((a, b) => b.r - a.r)) {
+      if (n.x == null) continue;
+      const fs = labelSize(n);
+      const w = Math.min(n.name.length, 28) * fs * 0.56;
+      const cy = n.r > 22 ? n.y : n.y + n.r + 10;
+      const box = [n.x - w / 2, cy - fs, n.x + w / 2, cy + (n.r > 22 ? fs + 4 : 2)];
+      const free = boxes.every((b) => box[2] < b[0] || box[0] > b[2] || box[3] < b[1] || box[1] > b[3]);
+      if (free || n.key === focus) {
+        boxes.push(box);
+        labelled.add(n.key);
+      }
+    }
+  }
 
   return (
     <svg ref={svgRef} width={size.w} height={size.h} className="block select-none touch-none" onPointerMove={onPointerMove} onPointerUp={onPointerUp} onClick={(e) => e.target === svgRef.current && onSelect(null)}>
@@ -238,7 +270,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
           const w = edgeWidth(e);
           const showLabel = (showLabels && !dim && callouts.has(e.key)) || hoverEdge === e.key || isSel || (hit && e.amount_usd >= 5e9);
           return (
-            <g key={e.key} opacity={dim ? 0.12 : 1} className="cursor-pointer" onMouseEnter={() => setHoverEdge(e.key)} onMouseLeave={() => setHoverEdge(null)} onClick={(ev) => { ev.stopPropagation(); onSelect({ kind: "edge", key: e.key }); }}>
+            <g key={e.key} opacity={dim ? 0.12 : 1} className="cursor-pointer fade" onMouseEnter={() => setHoverEdge(e.key)} onMouseLeave={() => setHoverEdge(null)} onClick={(ev) => { ev.stopPropagation(); onSelect({ kind: "edge", key: e.key }); }}>
               <path d={d} fill="none" stroke="transparent" strokeWidth={Math.max(10, w + 6)} />
               <path
                 d={d}
@@ -246,7 +278,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
                 stroke={hit ? "#c92a2a" : meta.color}
                 strokeWidth={hit ? w + 1.2 : isSel ? w + 1.5 : w}
                 strokeDasharray={meta.dashed ? "5 5" : hit ? "10 6" : undefined}
-                className={hit ? "flow" : undefined}
+                className={hit ? "flow edge-line" : "edge-line"}
                 markerEnd={e.type === "competitor" || e.type === "partnership" ? undefined : `url(#arrow-${hit ? "hit" : e.type})`}
                 strokeLinecap="round"
                 opacity={0.9}
@@ -270,14 +302,15 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
           const isSel = selected?.kind === "node" && selected.key === n.key;
           const dim = !n.group && ((impactMode && !rawImp) || (!impactMode && focusSet && !focusSet.has(n.key)));
           const justHit = imp && wave !== Infinity && (imp.hops || 0) === wave;
-          const showName = n.group || labelled.has(n.key) || n.key === focus || isSel || isHolding || hoverNode === n.key || (imp && imp.value >= 0.15);
+          const showName = n.group || labelled.has(n.key) || isSel || hoverNode === n.key;
           return (
-            <g key={n.key} data-node transform={`translate(${n.x},${n.y})`} opacity={dim ? 0.25 : 1} className="cursor-pointer" onPointerDown={(ev) => onPointerDown(ev, n)} onMouseEnter={() => setHoverNode(n.key)} onMouseLeave={() => setHoverNode(null)}>
+            <g key={n.key} data-node transform={`translate(${n.x},${n.y})`} opacity={dim ? 0.25 : 1} className="cursor-pointer fade" onPointerDown={(ev) => onPointerDown(ev, n)} onMouseEnter={() => setHoverNode(n.key)} onMouseLeave={() => setHoverNode(null)}>
               {imp?.origin && !imp.mark && <circle r={n.r + 6} fill="none" stroke="#e03131" strokeWidth={2} className="pulse" />}
               {imp?.origin && !imp.mark && wave !== Infinity && <circle key={`wave-${wave}`} r={n.r} fill="none" stroke={imp.sign < 0 ? "#e03131" : "#2f9e44"} strokeWidth={3} className="wave" vectorEffect="non-scaling-stroke" style={{ "--s": (n.r + 150) / n.r }} />}
               {justHit && !imp.origin && <circle key={`burst-${wave}`} r={n.r} fill="none" stroke={imp.sign < 0 ? "#e03131" : "#2f9e44"} strokeWidth={2.5} className="burst" vectorEffect="non-scaling-stroke" />}
               <circle
                 r={n.r}
+                className="node-circle"
                 fill={n.group ? "#ffffff" : impactFill(imp)}
                 strokeDasharray={n.group ? "4 3" : undefined}
                 stroke={n.group ? "#868e96" : isSel ? "#1c7ed6" : isHolding ? "#f08c00" : n.key === focus ? "#212529" : ownerSet.has(n.key) ? EDGE_TYPES.owner.color : "#ced4da"}
@@ -287,7 +320,7 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
                 <text y={-n.r - 4} textAnchor="middle" fontSize={11} fill="#f08c00">★</text>
               )}
               {showName && (
-                <text textAnchor="middle" y={n.r > 22 ? -2 : n.r + 13} fontSize={n.r > 45 ? 15 : n.r > 30 ? 13 : 11.5} fontWeight={n.r > 22 || n.key === focus ? 700 : 500} className="node-label" fill={n.group ? "#495057" : "#212529"}>
+                <text textAnchor="middle" y={n.r > 22 ? -2 : n.r + 13} fontSize={labelSize(n)} fontWeight={n.r > 22 || n.key === focus ? 700 : 500} className="node-label" fill={n.group ? "#495057" : n.r > 14 || n.key === focus ? "#212529" : "#495057"}>
                   {n.r > 30 ? n.name : n.name.replace(/\s*\(.*\)/, "")}
                 </text>
               )}

@@ -133,6 +133,7 @@ const MONEY_TYPES = new Set(["owner", "investment", "venture", "hardware", "clou
 /**
  * Circular financing: directed money loops (length 2-4) that include at least one
  * investment. Money invested in a customer comes back as that customer's purchases.
+ * Parallel deals between the same two companies don't repeat a loop; each loop of companies is reported once, through its largest disclosed deals.
  */
 export function findCircularFinancing(edges, maxLen = 4) {
   const out = {};
@@ -164,7 +165,14 @@ export function findCircularFinancing(edges, maxLen = 4) {
     }
   }
   const total = (c) => c.reduce((s, e) => s + (e.amount_usd || 0), 0);
-  return cycles.sort((a, b) => total(b) - total(a) || a.length - b.length);
+  const sorted = cycles.sort((a, b) => total(b) - total(a) || a.length - b.length);
+  const loopKeys = new Set();
+  return sorted.filter((cyc) => {
+    const key = cyc.map((e) => e.source).join(">");
+    if (loopKeys.has(key)) return false;
+    loopKeys.add(key);
+    return true;
+  });
 }
 
 /**
@@ -229,7 +237,7 @@ export function foldLeaves(nodes, edges, { pinned, unfolded, keep = 5 }) {
     const nodeNeighbours = neighbours.get(node.key);
     if (!nodeNeighbours || nodeNeighbours.size !== 1) continue;
     const hub = nodeNeighbours.values().next().value;
-    if (neighbours.get(hub)?.size === 1) continue;
+    if (!pinned.has(hub) && neighbours.get(hub)?.size === 1) continue;
     let leaves = leavesByHub.get(hub);
     if (!leaves) {
       leaves = [];

@@ -2,44 +2,106 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Semantic colors as RGB channels so Tailwind alpha modifiers work (bg-label/10). */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --canvas: 245 245 247;
+    --surface: 255 255 255;
+    --label: 29 29 31;
+    --label-2: 110 110 115;
+    --label-3: 174 174 178;
+    --separator: 60 60 67;
+    --fill: 120 120 128;
+    --accent: 0 113 227;
+    --risk: 255 59 48;
+    --gain: 52 199 89;
+    --warn: 255 149 0;
+    --glass-alpha: 0.72;
+    --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: 0 0 0;
+      --surface: 28 28 30;
+      --label: 245 245 247;
+      --label-2: 152 152 157;
+      --label-3: 99 99 102;
+      --separator: 84 84 88;
+      --fill: 120 120 128;
+      --accent: 10 132 255;
+      --risk: 255 69 58;
+      --gain: 48 209 88;
+      --warn: 255 159 10;
+      --glass-alpha: 0.7;
+      color-scheme: dark;
+    }
+  }
+
+  * {
+    border-color: rgb(var(--separator) / 0.14);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-canvas text-label antialiased;
+    font-size: 14px;
+    overscroll-behavior: none;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
   }
 }
 
-@layer base {
-  * {
-    @apply border-border;
+@layer components {
+  /* Frosted material for everything that floats over the graph. */
+  .glass {
+    background: rgb(var(--surface) / var(--glass-alpha));
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    border: 0.5px solid rgb(var(--separator) / 0.18);
+    box-shadow:
+      0 0 0 0.5px rgb(0 0 0 / 0.02),
+      0 8px 32px rgb(0 0 0 / 0.1);
   }
-  body {
-    @apply bg-background text-foreground antialiased;
+  @media (prefers-color-scheme: dark) {
+    .glass {
+      box-shadow:
+        0 0 0 0.5px rgb(255 255 255 / 0.06),
+        0 8px 32px rgb(0 0 0 / 0.5);
+    }
+  }
+  .scroll-area {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--fill) / 0.4) transparent;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 }
 
 .edge-label,
 .node-label {
   paint-order: stroke;
-  stroke: rgba(255, 255, 255, 0.92);
+  stroke: rgb(var(--canvas) / 0.92);
   stroke-width: 3.5px;
   stroke-linejoin: round;
   pointer-events: none;
@@ -60,4 +122,50 @@
 @keyframes pulse {
   0% { opacity: 0.9; transform: scale(1); }
   100% { opacity: 0; transform: scale(1.5); }
+}
+.fade-in {
+  animation: fade-in 0.22s var(--ease-ios);
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+/* Thin iOS-style range slider. */
+input[type="range"].slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--slider-color) var(--slider-pct), rgb(var(--fill) / 0.24) var(--slider-pct));
+}
+input[type="range"].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 0.5px 4px rgb(0 0 0 / 0.25), 0 0 0 0.5px rgb(0 0 0 / 0.04);
+  cursor: pointer;
+}
+input[type="range"].slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 0.5px 4px rgb(0 0 0 / 0.25);
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow,
+  .pulse,
+  .fade-in {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
 }

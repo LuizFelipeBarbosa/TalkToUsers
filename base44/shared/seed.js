@@ -149,7 +149,7 @@ export function companyKey(name) {
     .toLowerCase()
     .replace(/\(.*?\)/g, "")
     .replace(/\.(com|ai|io|co|net)\b/g, "")
-    .replace(/\b(inc|incorporated|corp|corporation|co|company|ltd|limited|llc|plc|ag|sa|gmbh|holdings?|group|technologies|labs?)\b\.?/g, "")
+    .replace(/\b(inc|incorporated|corp|corporation|co|company|ltd|limited|llc|plc|pbc|ag|sa|gmbh|holdings?|group|technologies|labs?)\b\.?/g, "")
     .replace(/[^a-z0-9]/g, "");
   return ALIASES[k] || k;
 }

@@ -1,6 +1,6 @@
 // Base44 Project Configuration
 {
-  "name": "Ripple",
+  "name": "Orbit",
   "description": "Company relationship graph and what-if risk propagation for VC analysts",
 
   "visibility": "public",

@@ -8,8 +8,24 @@
     "kind": { "type": "string", "enum": ["public", "private", "investor"], "default": "private" },
     "sector": { "type": "string" },
     "value_usd": { "type": "number", "description": "Market value or last valuation in USD (approximate)" },
+    "value_source": {
+      "type": "string",
+      "enum": ["seed", "article", "llm_estimate"],
+      "description": "Where value_usd came from: curated demo data, a page that states it (grounded: quoted, dated, see value_source_url), or the model's own estimate. Empty on older rows: seed for seed companies, otherwise an estimate."
+    },
+    "value_as_of": { "type": "string", "description": "Date the value applies to (YYYY-MM or YYYY-MM-DD): the one the page states, else the page's publication date" },
+    "value_basis": {
+      "type": "string",
+      "enum": ["funding_round", "tender_offer", "ipo", "acquisition", "market_cap", "other"],
+      "description": "What a grounded value comes from"
+    },
+    "seed_value_usd": { "type": "number", "description": "The curated demo value, kept when a grounded value replaced it" },
+    "value_source_url": { "type": "string", "description": "Page that states the value" },
+    "value_evidence": { "type": "string", "description": "Short quote stating the value" },
     "description": { "type": "string" },
+    "crunchbase_url": { "type": "string", "description": "Crunchbase profile used by the last lookup" },
     "last_fetched": { "type": "string", "description": "ISO time of the last live lookup; empty for seed-only companies" },
+    "research_done": { "type": "string", "description": "ISO time the last lookup's follow-up research rounds finished; older than last_fetched while they are still running" },
     "origin": { "type": "string", "enum": ["seed", "live"], "default": "live" }
   },
   "required": ["name", "key"]

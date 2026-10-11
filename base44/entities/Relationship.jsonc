@@ -13,10 +13,15 @@
     "amount_usd": { "type": "number", "description": "Deal size in USD when reported" },
     "label": { "type": "string", "description": "One-line callout shown on the graph" },
     "date": { "type": "string" },
-    "source_url": { "type": "string", "description": "Article the relationship was taken from" },
+    "source_url": { "type": "string", "description": "Article (or, for origin crunchbase, Crunchbase profile) the relationship was taken from" },
     "evidence": { "type": "string", "description": "Short quote from the source supporting the relationship" },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-    "origin": { "type": "string", "enum": ["seed", "live", "llm_web"], "default": "live" }
+    "origin": {
+      "type": "string",
+      "enum": ["seed", "live", "llm_web", "crunchbase"],
+      "default": "live",
+      "description": "seed: curated demo data; live: extracted from an article we read; llm_web: the model's own web search; crunchbase: listed on the company's Crunchbase profile, no article found"
+    }
   },
   "required": ["key", "source", "target", "type"]
 }

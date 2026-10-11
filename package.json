@@ -1,5 +1,5 @@
 {
-  "name": "ripple",
+  "name": "orbit",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -14,6 +14,7 @@
     "d3-drag": "^3.0.0",
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
+    "d3-transition": "^3.0.1",
     "d3-zoom": "^3.0.0",
     "lucide-react": "^0.475.0",
     "react": "^18.2.0",

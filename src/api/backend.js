@@ -80,6 +80,25 @@ export function heuristicParse(event, companies) {
 }
 
 // ---------- Deployed on Base44 ----------
+async function invokeLookup(body) {
+  const res = await base44.functions.invoke("lookupCompany", body);
+  if (res.data?.error) throw new Error(res.data.error);
+  return res.data;
+}
+
+// Keep calling a lookup's remaining rounds, waiting as long as each one asks.
+async function researchInBackground(key, res, onUpdate) {
+  try {
+    while (res.next_round) {
+      if (res.retry_after) await sleep(res.retry_after * 1000);
+      res = await invokeLookup({ key, round: res.next_round, state: res.state });
+      if (res.added) onUpdate?.(res);
+    }
+  } catch (e) {
+    console.warn("background research stopped", e);
+  }
+}
+
 const online = {
   async loadAll() {
     const res = await base44.functions.invoke("graphData", { action: "load" });
@@ -89,23 +108,31 @@ const online = {
   async seed() {
     return (await base44.functions.invoke("seedDemo", {})).data;
   },
-  async lookup(name, onStep, { force = false } = {}) {
-    // The function runs search, reading and extraction in one call; the steps are
-    // shown on a timer so the audience sees what is happening.
-    const steps = ["Searching the web (Bright Data)", "Reading articles", "Extracting relationships with AI", "Checking sources"];
-    let i = 0;
-    onStep?.(steps[0]);
-    const timer = setInterval(() => {
-      i = Math.min(i + 1, steps.length - 1);
-      onStep?.(steps[i]);
-    }, 6000);
-    try {
-      const res = await base44.functions.invoke("lookupCompany", { name, force });
-      if (res.data?.error) throw new Error(res.data.error);
-      return res.data;
-    } finally {
-      clearInterval(timer);
+  // A lookup runs in research rounds (see base44/functions/lookupCompany). The searching
+  // rounds take about a minute in all and are awaited, each reporting what it does next.
+  // Crunchbase takes minutes, so that round goes on in the background. onUpdate(res) is
+  // called whenever a round has saved new relationships, to redraw the graph.
+  async lookup(name, onStep, { force = false, onUpdate } = {}) {
+    const t0 = Date.now();
+    onStep?.("Searching the web and reading articles (Bright Data)");
+    const first = await invokeLookup({ name, force });
+    let res = first;
+    let added = first.added || 0;
+    while (res.next_round && !res.background) {
+      if (res.added) onUpdate?.(res);
+      onStep?.(res.step);
+      try {
+        res = await invokeLookup({ key: first.key, round: res.next_round, state: res.state });
+      } catch (e) {
+        // Nothing found in any round is a failed lookup; a follow-up round failing isn't.
+        if (!added) throw e;
+        console.warn("research round failed", e);
+        break;
+      }
+      added += res.added || 0;
     }
+    if (res.next_round && res.background) researchInBackground(first.key, res, onUpdate);
+    return { key: first.key, cached: first.cached, added, ms: Date.now() - t0, researching: !!(res.next_round && res.background) };
   },
   async addHolding(company, name, stake_usd) {
     return (await base44.functions.invoke("graphData", { action: "addHolding", company, name, stake_usd })).data;

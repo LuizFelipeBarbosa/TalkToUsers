@@ -2,16 +2,19 @@
 
 Type any company and get a map of who it is connected to (investors, customers, suppliers, acquisitions), built live from the web with sources on every line. Then ask "what if" and watch the shock travel through the map to your portfolio.
 
-- **Circle size** = market value or last valuation
+- **Circle size** = market value or last valuation, grounded: the latest valuation or market cap that a dated page states, quoted and linked in Details. Where no page states one, the curated demo value or the model's estimate (labelled as such)
 - **Line color** = relationship type; **line thickness** = deal size; **arrows follow the money**
 - **★** = companies in your portfolio
-- **Hidden risks** tab: circular financing loops (money invested in a customer that comes back as purchases) and concentration (several holdings depending on the same company)
+- **Risks** panel: circular financing loops (money invested in a customer that comes back as purchases) and concentration (several holdings depending on the same company)
+- **Key** (bottom-left, open on first visit): how to read the map, plus filters by deal size and company value. Circle size is on a log scale, and position on the map carries no meaning
+- Opens on the biggest money loop, with the layout already settled
 
 ## How it works
 
 | Piece | Where |
 |---|---|
-| Live lookup: Bright Data SERP API search, Bright Data Web Unlocker reads the top articles, LLM extracts relationships with a quote and doc id, then only edges that touch the company and cite an article we actually read are kept | `base44/functions/lookupCompany` |
+| Live lookup, in research rounds the app calls one after another. 1: Bright Data SERP API search, Web Unlocker reads the top articles, LLM extracts relationships (with a quote and doc id) and stated valuations; only edges that touch the company and cite an article we actually read are kept. 2: targeted follow-up searches (investors, acquisitions, customers/suppliers, values of counterparties on deals with an amount). 3: the company's Crunchbase profile (Bright Data Web Scraper API; collecting it takes 5–15 minutes, so it runs in the background) adds investors, parent, acquisitions and subsidiaries, each checked against articles first and otherwise shown as "Crunchbase profile" | `base44/functions/lookupCompany` |
+| Grounded values: two Google searches per company (one limited to the past year); the LLM lists the figures each result states and code keeps one only if its quote is in the result, its amount is in the quote, it is dated, the result names the company itself, and it is an actual value (not an estimate, target or round in talks). The newest such value wins if a trusted source (major outlet, market-data site, SEC, the company's own site) or two different sites state it. `scripts/ground-values.mjs` audits or refreshes every company on the graph (dry run by default) | `base44/functions/lookupCompany/valuation.ts` |
 | What-if: LLM turns free text into shocks; propagation is deterministic (`src/lib/graph.js`); LLM writes the per-holding memo | `base44/functions/analyzeScenario` |
 | Demo data: AI vendor-financing cluster (32 companies, 49 sourced relationships) + demo portfolio | `base44/shared/seed.js`, loaded by `base44/functions/seedDemo` on first open |
 | Reads and portfolio edits (service role, so visitors don't need to sign in) | `base44/functions/graphData` |
@@ -26,9 +29,9 @@ Needs Node.js 20.19 or newer.
 ```bash
 npm install -g base44@latest
 base44 login
-cd ripple
+cd orbit
 npm install
-base44 link --create --name ripple
+base44 link --create --name orbit
 base44 secrets set BRIGHTDATA_API_KEY=xxxx BRIGHTDATA_SERP_ZONE=serp_api1 BRIGHTDATA_UNLOCKER_ZONE=web_unlocker1
 base44 deploy
 base44 site open
@@ -47,7 +50,7 @@ Add `?offline=1` to the URL of the deployed app to demo from bundled data if the
 
 ## Demo script (2 minutes)
 
-1. Open on OpenAI: the Bloomberg-style map, with sources on every line.
-2. Hidden risks: "5 of 6 holdings depend directly on OpenAI" and the Nvidia → OpenAI → Oracle → Nvidia loop.
-3. What if: "OpenAI fails to raise its next round and halves its compute commitments". Drag the severity slider and watch the portfolio numbers move.
+1. It opens on the Nvidia → OpenAI → Oracle → Nvidia money loop. Click a line in the loop for the deal and its source, then "Explore the map" for OpenAI's neighbourhood.
+2. Risks: "5 of 6 holdings depend directly on OpenAI".
+3. What if (switch the search bar to What if, or pick an example in the What if panel): "OpenAI fails to raise its next round and halves its compute commitments". Drag the severity slider and watch the portfolio numbers move.
 4. Ask the audience for any company name and map it live.

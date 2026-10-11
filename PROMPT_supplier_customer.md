@@ -1,14 +1,14 @@
-# Prompt for a new Claude session: supplier & customer relationships in Ripple
+# Prompt for a new Claude session: supplier & customer relationships in Orbit
 
 Copy everything below the line into a new Claude Code session opened in `/Users/apple/code/ripple`.
 
 ---
 
-You are working on **Ripple**, a Base44 CLI project in `/Users/apple/code/ripple` (React + Vite frontend in `src/`, Base44 backend in `base44/`). Ripple lets a VC analyst type any company, builds a map of who it's connected to from the live web (with a source on every line), and runs "what if" shocks that propagate through the map to their portfolio. Read `README.md` first.
+You are working on **Orbit**, a Base44 CLI project in `/Users/apple/code/ripple` (React + Vite frontend in `src/`, Base44 backend in `base44/`). Orbit lets a VC analyst type any company, builds a map of who it's connected to from the live web (with a source on every line), and runs "what if" shocks that propagate through the map to their portfolio. Read `README.md` first.
 
 ## The problem
 
-Today Ripple mostly captures **capital** relationships: investments, VC rounds and acquisitions. Operating relationships, meaning **who supplies whom and who sells to whom**, are thin or missing. That's the most important channel for real-world risk (a supplier failure, a lost major customer). The few non-capital types (`hardware`, `cloud`, `software`) are AI-sector-specific and don't generalize to, for example, a retailer, a manufacturer or a fintech.
+Today Orbit mostly captures **capital** relationships: investments, VC rounds and acquisitions. Operating relationships, meaning **who supplies whom and who sells to whom**, are thin or missing. That's the most important channel for real-world risk (a supplier failure, a lost major customer). The few non-capital types (`hardware`, `cloud`, `software`) are AI-sector-specific and don't generalize to, for example, a retailer, a manufacturer or a fintech.
 
 Concretely, from the current code:
 - `base44/functions/lookupCompany/entry.ts`

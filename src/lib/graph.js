@@ -4,16 +4,18 @@
 // acquirer -> acquired, owner -> subsidiary. A shock to one company travels both ways along an edge,
 // with a different strength depending on which side you are on.
 
+// Apple system hues that read on both light and dark canvases. Pure red is left out:
+// it is reserved for the risk state of a what-if.
 export const EDGE_TYPES = {
-  owner: { label: "Owner / parent", color: "#1e3a8a" },
-  investment: { label: "Investment", color: "#22b8cf" },
-  venture: { label: "Venture capital", color: "#40c057" },
-  hardware: { label: "Hardware / chips", color: "#e64980" },
-  cloud: { label: "Cloud / compute", color: "#4c6ef5" },
-  software: { label: "Software / customer", color: "#9775fa" },
-  acquisition: { label: "Acquisition", color: "#f59f00" },
-  partnership: { label: "Partnership", color: "#868e96" },
-  competitor: { label: "Competitor", color: "#adb5bd", dashed: true },
+  owner: { label: "Owner / parent", color: "#5e5ce6" },
+  investment: { label: "Investment", color: "#32ade6" },
+  venture: { label: "Venture capital", color: "#34c759" },
+  hardware: { label: "Hardware / chips", color: "#f0508c" },
+  cloud: { label: "Cloud / compute", color: "#007aff" },
+  software: { label: "Software / customer", color: "#af52de" },
+  acquisition: { label: "Acquisition", color: "#ff9500" },
+  partnership: { label: "Partnership", color: "#8e8e93" },
+  competitor: { label: "Competitor", color: "#aeaeb2", dashed: true },
 };
 
 // How much the receiving side (target) depends on the paying side (source)
@@ -202,4 +204,57 @@ export function findSharedDependencies(nodes, edges, holdingKeys, { minHoldings 
     }))
     .sort((a, b) => b.direct - a.direct || b.holdings.length - a.holdings.length)
     .slice(0, 4);
+}
+
+/** Fold side-connection leaves while keeping each hub's largest connections visible. */
+export function foldLeaves(nodes, edges, { pinned, unfolded, keep = 5 }) {
+  const neighbours = new Map();
+  const dealTotals = new Map();
+  for (const edge of edges) {
+    if (edge.source === edge.target) continue;
+    const amount = edge.amount_usd || 0;
+    if (!neighbours.has(edge.source)) neighbours.set(edge.source, new Set());
+    if (!neighbours.has(edge.target)) neighbours.set(edge.target, new Set());
+    neighbours.get(edge.source).add(edge.target);
+    neighbours.get(edge.target).add(edge.source);
+    dealTotals.set(edge.source, (dealTotals.get(edge.source) || 0) + amount);
+    dealTotals.set(edge.target, (dealTotals.get(edge.target) || 0) + amount);
+  }
+
+  const leavesByHub = new Map();
+  const nodeOrder = new Map();
+  for (const [index, node] of nodes.entries()) {
+    nodeOrder.set(node.key, index);
+    if (pinned.has(node.key)) continue;
+    const nodeNeighbours = neighbours.get(node.key);
+    if (!nodeNeighbours || nodeNeighbours.size !== 1) continue;
+    const hub = nodeNeighbours.values().next().value;
+    if (neighbours.get(hub)?.size === 1) continue;
+    let leaves = leavesByHub.get(hub);
+    if (!leaves) {
+      leaves = [];
+      leavesByHub.set(hub, leaves);
+    }
+    leaves.push(node);
+  }
+
+  const hidden = new Set();
+  const folds = {};
+  for (const [hub, leaves] of leavesByHub) {
+    if (leaves.length <= keep) continue;
+    leaves.sort((a, b) => (
+      (dealTotals.get(b.key) || 0) - (dealTotals.get(a.key) || 0)
+      || (b.value_usd || 0) - (a.value_usd || 0)
+      || nodeOrder.get(a.key) - nodeOrder.get(b.key)
+    ));
+    const open = unfolded.has(hub);
+    folds[hub] = { count: leaves.length - keep, open };
+    if (!open) for (const leaf of leaves.slice(keep)) hidden.add(leaf.key);
+  }
+
+  return {
+    nodes: nodes.filter((node) => !hidden.has(node.key)),
+    edges: edges.filter((edge) => !hidden.has(edge.source) && !hidden.has(edge.target)),
+    folds,
+  };
 }

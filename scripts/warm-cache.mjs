@@ -14,7 +14,7 @@ const COMPANIES = [
   // Dev tools and platforms common at hackathons
   "Vercel", "Supabase", "Replit", "Anysphere", "Cognition", "Lovable", "StackBlitz", "Base44", "Neon", "Convex", "Clerk", "Stripe", "GitHub", "Linear", "Retool", "Figma", "Notion",
   // Agent and data tooling
-  "Browserbase", "Bright Data", "Exa", "Tavily", "Firecrawl", "E2B", "Daytona", "LangChain", "LlamaIndex", "Pinecone", "Weaviate", "ElevenLabs", "Vapi", "Perplexity", "Glean", "Sierra", "Decagon", "Harvey", "Mercor", "Ramp", "Brex", "Rippling",
+  "Browserbase", "Browser Use", "Steel.dev", "Hyperbrowser", "Bright Data", "Exa", "Tavily", "Firecrawl", "E2B", "Daytona", "LangChain", "LlamaIndex", "Pinecone", "Weaviate", "ElevenLabs", "Vapi", "Perplexity", "Glean", "Sierra", "Decagon", "Harvey", "Mercor", "Ramp", "Brex", "Rippling",
 ];
 const args = process.argv.slice(2);
 const force = args.includes("--force");

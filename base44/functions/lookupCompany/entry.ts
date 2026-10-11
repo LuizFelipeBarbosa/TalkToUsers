@@ -41,11 +41,12 @@ async function brightData(apiKey: string, zone: string, url: string, extra: Reco
 
 // Promise.allSettled that stops waiting early: when `enough` promises have fulfilled it
 // waits at most `graceMs` for the rest, and it never waits longer than `hardMs`.
-// Whatever is still pending then counts as rejected.
+// (doubled while nothing has come back). Whatever is still pending then counts as rejected.
 function settleFast<T>(promises: Promise<T>[], { enough, graceMs, hardMs, label }: { enough: number; graceMs: number; hardMs: number; label: string }) {
   return new Promise<PromiseSettledResult<T>[]>((resolve) => {
     const out: (PromiseSettledResult<T> | undefined)[] = promises.map(() => undefined);
     let settled = 0, ok = 0, done = false, grace: number | undefined;
+    const start = Date.now();
     const finish = () => {
       if (done) return;
       done = true;
@@ -53,7 +54,12 @@ function settleFast<T>(promises: Promise<T>[], { enough, graceMs, hardMs, label 
       clearTimeout(grace);
       resolve(out.map((r) => r || { status: "rejected", reason: new Error(label) }));
     };
-    const hard = setTimeout(finish, hardMs);
+    // With nothing back at all, give up only at the requests' own timeout: an empty
+    // result is worse than a slow one.
+    let hard = setTimeout(function cut() {
+      if (ok === 0 && settled < promises.length && Date.now() - start < hardMs * 2) hard = setTimeout(cut, 1000);
+      else finish();
+    }, hardMs);
     promises.forEach((p, i) =>
       p.then(
         (value) => { out[i] = { status: "fulfilled", value }; ok++; },
@@ -127,7 +133,7 @@ async function searchAndRead(name: string, log: string[], deep = false): Promise
   // Google via Bright Data sometimes hangs on one query: once all but one are back, wait
   // at most 2 s for the last one, and never more than 14 s in all.
   const serps = await settleFast(
-    queries.map((q) => brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, deep ? 30000 : 14000)),
+    queries.map((q) => brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, deep ? 30000 : 28000)),
     deep ? { enough: queries.length, graceMs: 0, hardMs: 30000, label: "slow search skipped" } : { enough: queries.length - 1, graceMs: 2000, hardMs: 14000, label: "slow search skipped" },
   );
   const docs: Doc[] = [];
@@ -178,7 +184,7 @@ async function searchAndRead(name: string, log: string[], deep = false): Promise
   const toRead = docs.slice(0, MAX_ARTICLES + 2);
   // Once most pages are in, a slow site isn't worth holding the whole lookup for.
   const pages = await settleFast(
-    toRead.map((d) => brightData(apiKey, unlockerZone, d.url, { data_format: "markdown" }, deep ? 25000 : 12000)),
+    toRead.map((d) => brightData(apiKey, unlockerZone, d.url, { data_format: "markdown" }, deep ? 25000 : 24000)),
     deep ? { enough: toRead.length, graceMs: 0, hardMs: 25000, label: "slow page skipped" } : { enough: MAX_ARTICLES - 2, graceMs: 2000, hardMs: 12000, label: "slow page skipped" },
   );
   pages.forEach((p, i) => {

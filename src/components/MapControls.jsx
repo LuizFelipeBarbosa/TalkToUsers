@@ -60,7 +60,7 @@ export default function MapControls({ graph, compact, showAll, onShowAll, foldBu
         <div className={`glass fade-in absolute w-[316px] max-w-[calc(100vw-80px)] rounded-2xl p-3 ${compact ? "bottom-0 right-full mr-2" : "bottom-full right-0 mb-2"}`}>
           <div className="overflow-hidden rounded-xl bg-fill/[0.08]">
             <Toggle label="Show whole map" checked={showAll} onChange={onShowAll} />
-            <Toggle label="Fold busy companies" checked={foldBusy} onChange={onFoldBusy} />
+            <Toggle label="Fold smaller connections" checked={foldBusy} onChange={onFoldBusy} />
             <Toggle label="Deal callouts" checked={showLabels} onChange={onShowLabels} />
           </div>
 

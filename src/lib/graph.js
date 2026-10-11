@@ -13,6 +13,7 @@ export const EDGE_TYPES = {
   hardware: { label: "Hardware / chips", color: "#f0508c" },
   cloud: { label: "Cloud / compute", color: "#007aff" },
   software: { label: "Software / customer", color: "#af52de" },
+  supply: { label: "Supply / services", color: "#a2845e" },
   acquisition: { label: "Acquisition", color: "#ff9500" },
   partnership: { label: "Partnership", color: "#8e8e93" },
   competitor: { label: "Competitor", color: "#aeaeb2", dashed: true },
@@ -20,8 +21,8 @@ export const EDGE_TYPES = {
 
 // How much the receiving side (target) depends on the paying side (source)
 // when no deal size is known, and vice versa.
-const RECEIVER_DEPENDENCE = { owner: 0.6, investment: 0.35, venture: 0.35, hardware: 0.2, cloud: 0.3, software: 0.15, acquisition: 0.55, partnership: 0.1, competitor: 0.1 };
-const PAYER_DEPENDENCE = { owner: 0.35, investment: 0.25, venture: 0.2, hardware: 0.2, cloud: 0.25, software: 0.3, acquisition: 0.35, partnership: 0.1, competitor: 0.1 };
+const RECEIVER_DEPENDENCE = { owner: 0.6, investment: 0.35, venture: 0.35, hardware: 0.2, cloud: 0.3, software: 0.15, supply: 0.2, acquisition: 0.55, partnership: 0.1, competitor: 0.1 };
+const PAYER_DEPENDENCE = { owner: 0.35, investment: 0.25, venture: 0.2, hardware: 0.2, cloud: 0.25, software: 0.3, supply: 0.3, acquisition: 0.35, partnership: 0.1, competitor: 0.1 };
 
 const DEFAULT_VALUE = 5e9; // used when a company's size is unknown
 
@@ -128,14 +129,14 @@ export function impactPath(impacts, key) {
   return path;
 }
 
-const MONEY_TYPES = new Set(["owner", "investment", "venture", "hardware", "cloud", "software", "acquisition"]);
+const MONEY_TYPES = new Set(["owner", "investment", "venture", "hardware", "cloud", "software", "supply", "acquisition"]);
 
 /**
- * Circular financing: directed money loops (length 2-4) that include at least one
+ * Circular financing: directed money loops (length 2-5) that include at least one
  * investment. Money invested in a customer comes back as that customer's purchases.
  * Parallel deals between the same two companies don't repeat a loop; each loop of companies is reported once, through its largest disclosed deals.
  */
-export function findCircularFinancing(edges, maxLen = 4) {
+export function findCircularFinancing(edges, maxLen = 5) {
   const out = {};
   for (const e of edges) if (MONEY_TYPES.has(e.type)) (out[e.source] ||= []).push(e);
   const cycles = [];
@@ -173,6 +174,38 @@ export function findCircularFinancing(edges, maxLen = 4) {
     loopKeys.add(key);
     return true;
   });
+}
+
+// The most money that can go all the way round a loop: it is only as big as its smallest
+// deal, so a loop with an undisclosed deal counts as 0. (Adding up the deals instead would
+// rank long chains first just for having more of them.)
+export const loopFlow = (loop) => Math.min(...loop.map((e) => e.amount_usd || 0));
+
+// Which capital edge a loop is listed under: an investment over ownership, then the larger deal.
+const ANCHOR_RANK = { investment: 2, venture: 2, owner: 1 };
+
+/**
+ * Groups money loops by the investment that starts them, so one deal whose money comes back
+ * several ways is listed once. Each route is its loop rotated to start with that investment
+ * (investor → investee → … → investor). Routes run shortest first, then by flow; groups by
+ * their biggest flow, then by the size of the investment.
+ * Returns [{ id, investment, routes }].
+ */
+export function groupLoops(loops) {
+  const groups = new Map();
+  for (const loop of loops) {
+    const investment = loop
+      .filter((e) => ANCHOR_RANK[e.type])
+      .reduce((a, b) => (ANCHOR_RANK[b.type] - ANCHOR_RANK[a.type] || (b.amount_usd || 0) - (a.amount_usd || 0)) > 0 ? b : a);
+    const i = loop.indexOf(investment);
+    const route = [...loop.slice(i), ...loop.slice(0, i)];
+    if (!groups.has(investment.key)) groups.set(investment.key, { id: investment.key, investment, routes: [] });
+    groups.get(investment.key).routes.push(route);
+  }
+  const flow = (g) => Math.max(...g.routes.map(loopFlow));
+  return [...groups.values()]
+    .map((g) => ({ ...g, routes: g.routes.sort((a, b) => a.length - b.length || loopFlow(b) - loopFlow(a)) }))
+    .sort((a, b) => flow(b) - flow(a) || (b.investment.amount_usd || 0) - (a.investment.amount_usd || 0) || b.routes.length - a.routes.length);
 }
 
 /**
@@ -214,55 +247,81 @@ export function findSharedDependencies(nodes, edges, holdingKeys, { minHoldings 
     .slice(0, 4);
 }
 
-/** Fold side-connection leaves while keeping each hub's largest connections visible. */
-export function foldLeaves(nodes, edges, { pinned, unfolded, keep = 5 }) {
-  const neighbours = new Map();
-  const dealTotals = new Map();
+/**
+ * Collapse the map to each company's biggest connections. Around a focus company, the focus keeps
+ * its `keepDirect` biggest direct links and each of those keeps its `keepPerHub` biggest links
+ * further out. On the whole map (no focus), a company keeps `keepPerHub` of the companies that link
+ * only to it. The rest fold into the company's "+N" count; `extra` ({ key: n }) shows n more of them.
+ * Pinned companies always show, and one two hops out brings along the link to the focus it goes through.
+ * Returns { nodes, edges, more: { key: { count, extra } } }, where count is how many are still folded.
+ */
+export function collapseMap(nodes, edges, { focus, pinned, extra = {}, keepDirect = 8, keepPerHub = 3 }) {
+  const byKey = new Map(nodes.map((node, index) => [node.key, { node, index }]));
+  const deals = new Map(); // key -> Map(other key -> total deal size between them)
+  const addDeal = (a, b, amount) => {
+    if (!deals.has(a)) deals.set(a, new Map());
+    deals.get(a).set(b, (deals.get(a).get(b) || 0) + amount);
+  };
   for (const edge of edges) {
-    if (edge.source === edge.target) continue;
-    const amount = edge.amount_usd || 0;
-    if (!neighbours.has(edge.source)) neighbours.set(edge.source, new Set());
-    if (!neighbours.has(edge.target)) neighbours.set(edge.target, new Set());
-    neighbours.get(edge.source).add(edge.target);
-    neighbours.get(edge.target).add(edge.source);
-    dealTotals.set(edge.source, (dealTotals.get(edge.source) || 0) + amount);
-    dealTotals.set(edge.target, (dealTotals.get(edge.target) || 0) + amount);
+    if (edge.source === edge.target || !byKey.has(edge.source) || !byKey.has(edge.target)) continue;
+    addDeal(edge.source, edge.target, edge.amount_usd || 0);
+    addDeal(edge.target, edge.source, edge.amount_usd || 0);
   }
+  const neighboursOf = (key) => [...(deals.get(key)?.keys() || [])];
+  // Biggest deal with the hub first, then the most valuable company, then the original order.
+  const ranked = (hub, keys) => keys.sort((a, b) => (
+    deals.get(hub).get(b) - deals.get(hub).get(a)
+    || (byKey.get(b).node.value_usd || 0) - (byKey.get(a).node.value_usd || 0)
+    || byKey.get(a).index - byKey.get(b).index
+  ));
 
-  const leavesByHub = new Map();
-  const nodeOrder = new Map();
-  for (const [index, node] of nodes.entries()) {
-    nodeOrder.set(node.key, index);
-    if (pinned.has(node.key)) continue;
-    const nodeNeighbours = neighbours.get(node.key);
-    if (!nodeNeighbours || nodeNeighbours.size !== 1) continue;
-    const hub = nodeNeighbours.values().next().value;
-    if (!pinned.has(hub) && neighbours.get(hub)?.size === 1) continue;
-    let leaves = leavesByHub.get(hub);
-    if (!leaves) {
-      leaves = [];
-      leavesByHub.set(hub, leaves);
+  // [hub, the connections it can fold], in the order they are opened: the focus before its links.
+  const groups = [];
+  let direct = new Set();
+  if (focus) {
+    const directKeys = ranked(focus, neighboursOf(focus));
+    direct = new Set(directKeys);
+    groups.push([focus, directKeys]);
+    for (const hub of directKeys) {
+      groups.push([hub, ranked(hub, neighboursOf(hub).filter((key) => key !== focus && !direct.has(key)))]);
     }
-    leaves.push(node);
+  } else {
+    const leavesByHub = new Map();
+    for (const node of nodes) {
+      const neighbours = neighboursOf(node.key);
+      if (neighbours.length !== 1) continue;
+      const [hub] = neighbours;
+      if (!pinned.has(hub) && deals.get(hub).size === 1) continue; // a pair that only links to each other
+      if (!leavesByHub.has(hub)) leavesByHub.set(hub, []);
+      leavesByHub.get(hub).push(node.key);
+    }
+    for (const [hub, leaves] of leavesByHub) groups.push([hub, ranked(hub, leaves)]);
   }
 
-  const hidden = new Set();
-  const folds = {};
-  for (const [hub, leaves] of leavesByHub) {
-    if (leaves.length <= keep) continue;
-    leaves.sort((a, b) => (
-      (dealTotals.get(b.key) || 0) - (dealTotals.get(a.key) || 0)
-      || (b.value_usd || 0) - (a.value_usd || 0)
-      || nodeOrder.get(a.key) - nodeOrder.get(b.key)
-    ));
-    const open = unfolded.has(hub);
-    folds[hub] = { count: leaves.length - keep, open };
-    if (!open) for (const leaf of leaves.slice(keep)) hidden.add(leaf.key);
+  const foldable = new Set(groups.flatMap(([, children]) => children));
+  const visible = new Set(nodes.filter((node) => !foldable.has(node.key) || pinned.has(node.key)).map((node) => node.key));
+  for (const key of pinned) {
+    if (!foldable.has(key) || direct.has(key)) continue;
+    const via = neighboursOf(key).filter((other) => direct.has(other));
+    if (via.length) visible.add(via.reduce((a, b) => (deals.get(key).get(b) > deals.get(key).get(a) ? b : a)));
+  }
+  // A hub always shows the same top of its list, so pinning a company (selecting it, say) never
+  // brings in another one.
+  for (const [hub, children] of groups) {
+    if (!visible.has(hub)) continue;
+    const keep = (hub === focus ? keepDirect : keepPerHub) + (extra[hub] || 0);
+    for (const key of children.slice(0, keep)) visible.add(key);
   }
 
+  const more = {};
+  for (const [hub, children] of groups) {
+    if (!visible.has(hub)) continue;
+    const count = children.filter((child) => !visible.has(child)).length;
+    if (count > 0 || extra[hub]) more[hub] = { count, extra: extra[hub] || 0 };
+  }
   return {
-    nodes: nodes.filter((node) => !hidden.has(node.key)),
-    edges: edges.filter((edge) => !hidden.has(edge.source) && !hidden.has(edge.target)),
-    folds,
+    nodes: nodes.filter((node) => visible.has(node.key)),
+    edges: edges.filter((edge) => visible.has(edge.source) && visible.has(edge.target)),
+    more,
   };
 }

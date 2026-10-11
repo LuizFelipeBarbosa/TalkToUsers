@@ -1,9 +1,10 @@
-// Investor recall test against the deployed app: runs a fresh live lookup for each
-// company and compares the investors that lookup found with a known list.
+// Recall test against the deployed app: runs a fresh live lookup for each company and
+// compares the investors, suppliers and customers that lookup found with known lists.
+// Suppliers and customers also have to point the right way (buyer → seller).
 //   BASE44_APP_ID=<app id> node scripts/investor-recall.mjs              (all companies)
 //   BASE44_APP_ID=<app id> node scripts/investor-recall.mjs Waymo        (one company)
 //   BASE44_APP_ID=<app id> node scripts/investor-recall.mjs Stripe --runs 2
-// The answer keys are publicly reported investors, not exhaustive cap tables.
+// The answer keys are publicly reported relationships, not exhaustive lists.
 //
 // Only edges written by this lookup count: a refresh keeps edges from earlier lookups,
 // so the graph as a whole would credit this run with what an older one found.
@@ -16,12 +17,24 @@ const ANSWER_KEY = {
   Waymo: {
     owner: "Alphabet",
     investors: ["Alphabet", "Andreessen Horowitz", "Fidelity", "Silver Lake", "Tiger Global", "T. Rowe Price", "Dragoneer", "DST Global", "Sequoia Capital", "Kleiner Perkins", "Mubadala Capital"],
+    suppliers: ["Hyundai", "Jaguar Land Rover", "Zeekr", "Magna"],
   },
-  Anthropic: { investors: ["Google", "Amazon", "Spark Capital", "Menlo Ventures", "Lightspeed", "ICONIQ", "Fidelity", "Salesforce Ventures"] },
-  Stripe: { investors: ["Sequoia Capital", "Andreessen Horowitz", "General Catalyst", "Founders Fund", "Thrive Capital"] },
+  Anthropic: {
+    investors: ["Google", "Amazon", "Spark Capital", "Menlo Ventures", "Lightspeed", "ICONIQ", "Fidelity", "Salesforce Ventures"],
+    suppliers: ["Amazon", "Google", "Microsoft"],
+  },
+  Stripe: {
+    investors: ["Sequoia Capital", "Andreessen Horowitz", "General Catalyst", "Founders Fund", "Thrive Capital"],
+    customers: ["Amazon", "Shopify", "Ford", "OpenAI"],
+  },
   Databricks: { investors: ["Andreessen Horowitz", "Thrive Capital", "Insight Partners", "NEA", "Lightspeed", "T. Rowe Price", "Microsoft"] },
+  Nvidia: {
+    suppliers: ["TSMC", "SK Hynix", "Micron", "Samsung"],
+    customers: ["Microsoft", "Meta", "Amazon", "Google", "Oracle", "CoreWeave"],
+  },
 };
 const INVESTOR_TYPES = ["investment", "venture", "owner"];
+const COMMERCIAL_TYPES = ["hardware", "cloud", "software", "supply"];
 // Follow-up rounds, including polls while Crunchbase collects (up to 15 minutes).
 const MAX_CALLS = 60;
 
@@ -76,7 +89,21 @@ function brightDataCalls(responses) {
 const countBy = (items, f) => items.reduce((m, x) => ((m[f(x)] = (m[f(x)] || 0) + 1), m), {});
 const fmt = (m) => Object.entries(m).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
 
-const totals = { want: 0, hit: 0, lenient: 0, lookups: 0, failed: 0, seconds: 0, first: 0, calls: 0 };
+// Suppliers and customers of the company that this lookup found: in the right direction
+// (company → supplier, customer → company), the wrong way round, or only as a partnership,
+// which carries no direction. Names match leniently ("Ford" finds "Ford Motor Company").
+function commercialRecall(edges, ck, role, names) {
+  const other = (r) => (r.source === ck ? r.target : r.source);
+  const rightWay = (r) => (role === "suppliers" ? r.source === ck : r.target === ck);
+  const withName = (n, types) => edges.filter((r) => types.includes(r.type) && sameName(other(r), companyKey(n)));
+  const right = names.filter((n) => withName(n, COMMERCIAL_TYPES).some(rightWay));
+  const reversed = names.filter((n) => !right.includes(n) && withName(n, COMMERCIAL_TYPES).length);
+  const partnerOnly = names.filter((n) => !right.includes(n) && !reversed.includes(n) && withName(n, ["partnership"]).length);
+  const missing = names.filter((n) => !right.includes(n) && !reversed.includes(n) && !partnerOnly.includes(n));
+  return { right, reversed, partnerOnly, missing };
+}
+
+const totals = { want: 0, hit: 0, lenient: 0, lookups: 0, failed: 0, seconds: 0, first: 0, calls: 0, deals: 0, right: 0, reversed: 0 };
 for (const [name, key] of Object.entries(ANSWER_KEY)) {
   if (only && only.toLowerCase() !== name.toLowerCase()) continue;
   for (let run = 1; run <= runs; run++) {
@@ -101,39 +128,60 @@ for (const [name, key] of Object.entries(ANSWER_KEY)) {
     }
     const after = await loadGraph();
     const edges = edgesFromRun(responses, before, after, ck);
-    const inbound = edges.filter((r) => r.target === ck && INVESTOR_TYPES.includes(r.type));
-    const originOf = new Map(inbound.map((r) => [r.source, r.origin]));
-    const want = key.investors.map(companyKey);
-    const found = want.filter((k) => originOf.has(k));
-    const foundLenient = want.filter((k) => [...originOf.keys()].some((f) => sameName(f, k)));
-    const missing = key.investors.filter((n) => !originOf.has(companyKey(n)));
-    const extra = [...originOf.keys()].filter((k) => !want.includes(k));
-    const ownerOk = !key.owner || inbound.some((r) => r.type === "owner" && r.source === companyKey(key.owner));
-    // A round total copied onto every investor in the round is the bug this test guards against.
-    const pinned = inbound.filter((r) => r.amount_usd && inbound.filter((x) => x.amount_usd === r.amount_usd).length > 1);
-    const graphInbound = new Set(touching(after, ck).filter((r) => r.target === ck && INVESTOR_TYPES.includes(r.type)).map((r) => r.source));
-    totals.want += want.length;
-    totals.hit += found.length;
-    totals.lenient += foundLenient.length;
+    const out = edges.filter((r) => r.source === ck).length;
 
-    console.log(`\n${label}: ${found.length}/${want.length} known investors found (${Math.round((100 * found.length) / want.length)}%; ${foundLenient.length}/${want.length} matching names leniently), ${edges.length} edges, ${seconds.toFixed(0)}s (first results ${firstSeconds.toFixed(0)}s), ${calls} Bright Data calls`);
+    console.log(`\n${label}: ${edges.length} edges (${out} out, ${edges.length - out} in), ${seconds.toFixed(0)}s (first results ${firstSeconds.toFixed(0)}s), ${calls} Bright Data calls`);
     const landed = responses.filter((r) => r.added || r.done || r.round === 1).map((r) => `round ${r.round} +${r.added ?? 0} at ${r.at.toFixed(0)}s`);
     console.log(`  rounds: ${landed.join(", ")} (${responses.length} calls)`);
-    console.log(`  known investors by source: ${fmt(countBy(found, (k) => originOf.get(k)))}`);
     console.log(`  edges by type: ${fmt(countBy(edges, (r) => r.type))}`);
     console.log(`  edges by source: ${fmt(countBy(edges, (r) => r.origin))}`);
-    if (key.owner) console.log(`  owner ${key.owner}: ${ownerOk ? "found" : "MISSING"}`);
-    if (missing.length) console.log(`  missing: ${missing.join(", ")}`);
-    if (extra.length) console.log(`  also found: ${extra.join(", ")}`);
-    if (pinned.length) console.log(`  WARNING same amount on several investors: ${pinned.map((r) => r.key).join(", ")}`);
+
+    if (key.investors) {
+      const inbound = edges.filter((r) => r.target === ck && INVESTOR_TYPES.includes(r.type));
+      const originOf = new Map(inbound.map((r) => [r.source, r.origin]));
+      const want = key.investors.map(companyKey);
+      const found = want.filter((k) => originOf.has(k));
+      const foundLenient = want.filter((k) => [...originOf.keys()].some((f) => sameName(f, k)));
+      const missing = key.investors.filter((n) => !originOf.has(companyKey(n)));
+      const extra = [...originOf.keys()].filter((k) => !want.includes(k));
+      const ownerOk = !key.owner || inbound.some((r) => r.type === "owner" && r.source === companyKey(key.owner));
+      // A round total copied onto every investor in the round is the bug this test guards against.
+      const pinned = inbound.filter((r) => r.amount_usd && inbound.filter((x) => x.amount_usd === r.amount_usd).length > 1);
+      const graphInbound = new Set(touching(after, ck).filter((r) => r.target === ck && INVESTOR_TYPES.includes(r.type)).map((r) => r.source));
+      totals.want += want.length;
+      totals.hit += found.length;
+      totals.lenient += foundLenient.length;
+
+      console.log(`  investors: ${found.length}/${want.length} known investors found (${Math.round((100 * found.length) / want.length)}%; ${foundLenient.length}/${want.length} matching names leniently)`);
+      console.log(`  known investors by source: ${fmt(countBy(found, (k) => originOf.get(k)))}`);
+      if (key.owner) console.log(`  owner ${key.owner}: ${ownerOk ? "found" : "MISSING"}`);
+      if (missing.length) console.log(`  missing: ${missing.join(", ")}`);
+      if (extra.length) console.log(`  also found: ${extra.join(", ")}`);
+      if (pinned.length) console.log(`  WARNING same amount on several investors: ${pinned.map((r) => r.key).join(", ")}`);
+      console.log(`  in the graph overall (all lookups): ${want.filter((k) => graphInbound.has(k)).length}/${want.length} known investors`);
+    }
+
+    for (const role of ["suppliers", "customers"]) {
+      if (!key[role]) continue;
+      const { right, reversed, partnerOnly, missing } = commercialRecall(edges, ck, role, key[role]);
+      const overall = commercialRecall(touching(after, ck), ck, role, key[role]);
+      totals.deals += key[role].length;
+      totals.right += right.length;
+      totals.reversed += reversed.length;
+      console.log(`  ${role}: ${right.length}/${key[role].length} known ${role} found the right way round${reversed.length ? `; WRONG WAY ROUND: ${reversed.join(", ")}` : ""}`);
+      if (partnerOnly.length) console.log(`    only as a partnership: ${partnerOnly.join(", ")}`);
+      if (missing.length) console.log(`    missing: ${missing.join(", ")}`);
+      console.log(`    in the graph overall (all lookups): ${overall.right.length}/${key[role].length} the right way round, ${overall.reversed.length} the wrong way`);
+    }
+
     const kept = Number(responses[0]?.log?.join(" ").match(/kept: (\d+)/)?.[1] || 0);
     if (!responses.some((r) => r?.edges) && kept > edges.length) console.log(`  note: lookup kept ${kept} edges; ${kept - edges.length} matched existing ones unchanged and aren't counted`);
-    console.log(`  in the graph overall (all lookups): ${want.filter((k) => graphInbound.has(k)).length}/${want.length} known investors`);
     for (const r of responses) if (!/still collecting/.test((r?.log || []).join())) console.log(`  log: round ${r.round}: ${(r?.log || []).join(" | ")}`);
   }
 }
 if (totals.lookups) {
-  const pct = (n) => (totals.want ? Math.round((100 * n) / totals.want) : 0);
-  console.log(`\nOverall recall: ${totals.hit}/${totals.want} (${pct(totals.hit)}%); matching names leniently ${totals.lenient}/${totals.want} (${pct(totals.lenient)}%)`);
+  const pct = (n, of) => (of ? Math.round((100 * n) / of) : 0);
+  if (totals.want) console.log(`\nInvestor recall: ${totals.hit}/${totals.want} (${pct(totals.hit, totals.want)}%); matching names leniently ${totals.lenient}/${totals.want} (${pct(totals.lenient, totals.want)}%)`);
+  if (totals.deals) console.log(`Supplier and customer recall: ${totals.right}/${totals.deals} (${pct(totals.right, totals.deals)}%) the right way round, ${totals.reversed} the wrong way round`);
   console.log(`Lookups: ${totals.lookups}, failed: ${totals.failed}, first results after ${(totals.first / totals.lookups).toFixed(0)}s and done after ${(totals.seconds / totals.lookups).toFixed(0)}s on average, ${(totals.calls / totals.lookups).toFixed(0)} Bright Data calls per lookup`);
 }

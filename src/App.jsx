@@ -7,11 +7,12 @@ import MapControls from "@/components/MapControls";
 import MapKey, { mapKeySize, useMapKeyOpen } from "@/components/MapKey";
 import Details from "@/components/panels/Details";
 import WhatIf from "@/components/panels/WhatIf";
+import Loops from "@/components/panels/Loops";
 import Risks from "@/components/panels/Risks";
 import Portfolio from "@/components/panels/Portfolio";
-import { loopPath } from "@/components/panels/common";
+import { loopPath, shortName } from "@/components/panels/common";
 import { api, OFFLINE, companyKey } from "@/api/backend";
-import { propagate, impactPath, findCircularFinancing, findSharedDependencies, foldLeaves } from "@/lib/graph";
+import { propagate, impactPath, findCircularFinancing, groupLoops, loopFlow, findSharedDependencies, collapseMap } from "@/lib/graph";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 
 const EXAMPLES = [
@@ -20,6 +21,9 @@ const EXAMPLES = [
   "Nvidia's next-gen chips slip by two quarters",
   "Oracle can't finance its Stargate data centers",
 ];
+
+// How many more of a company's folded connections one click on its "+N" shows.
+const SHOW_MORE_STEP = 10;
 
 // Phones, and tablets held upright, get a bottom sheet; wider screens get a floating card.
 const COMPACT_QUERY = "(max-width: 767px), (max-width: 1023px) and (orientation: portrait)";
@@ -35,9 +39,10 @@ export default function App() {
   const [selected, setSelected] = useState({ kind: "node", key: "openai" });
   const [showAll, setShowAll] = useState(false);
   const [showLabels, setShowLabels] = useState(() => !startsCompact());
-  const [unfolded, setUnfolded] = useState(() => new Set());
+  const [extra, setExtra] = useState({}); // company -> how many more of its folded connections are shown
   const [foldBusy, setFoldBusy] = useState(true);
   const [minDeal, setMinDeal] = useState(0); // hide deals below this size (USD)
+  const [showUndisclosed, setShowUndisclosed] = useState(false); // keep deals with no amount when minDeal is set
   const [minValue, setMinValue] = useState(0); // hide companies valued below this (USD)
   const [keyOpen, setKeyOpen] = useMapKeyOpen();
   const [tab, setTab] = useState("details");
@@ -78,8 +83,10 @@ export default function App() {
     [scenario?.impacts, highlight?.impacts]
   );
   const selectedEdgeKey = selected?.kind === "edge" ? selected.key : null;
+  const selectedNodeKey = selected?.kind === "node" ? selected.key : null;
   const pinned = useMemo(() => {
     const keys = new Set([focus, ...holdingKeys, ...impacted]);
+    if (selectedNodeKey) keys.add(selectedNodeKey);
     for (const edgeKey of [...(scenario?.edgesHit || []), ...(highlight?.edges || [])]) {
       const edge = edgeByKey[edgeKey];
       if (edge) {
@@ -95,12 +102,13 @@ export default function App() {
       }
     }
     return keys;
-  }, [focus, holdingKeys, impacted, scenario?.edgesHit, highlight?.edges, edgeByKey, selectedEdgeKey]);
+  }, [focus, holdingKeys, impacted, scenario?.edgesHit, highlight?.edges, edgeByKey, selectedEdgeKey, selectedNodeKey]);
 
   // What is drawn: the focus company's 2-hop neighbourhood (plus anything a scenario
-  // touched), or the whole map when "Show whole map" is on. The deal and company filters
+  // touched), or the whole map when "Show whole map" is on. `centre` is the company the
+  // neighbourhood was walked from, or null for the whole map. The deal and company filters
   // apply first. They never hide the focus company, holdings, or what a scenario or
-  // highlight points at, and they only change the view: Risks and What if use every edge.
+  // highlight points at, and they only change the view: Loops, Risks and What if use every edge.
   const neighbourhood = useMemo(() => {
     const filtering = minDeal > 0 || minValue > 0;
     let shownCompanies = companies;
@@ -110,12 +118,13 @@ export default function App() {
       const pinnedEdges = new Set([...(scenario?.edgesHit || []), ...(highlight?.edges || [])]);
       shownCompanies = companies.filter((c) => pinnedAgainstFilters.has(c.key) || (c.value_usd || 0) >= minValue);
       const shown = new Set(shownCompanies.map((c) => c.key));
-      shownEdges = edges.filter((e) => pinnedEdges.has(e.key) || (shown.has(e.source) && shown.has(e.target) && (e.amount_usd || 0) >= minDeal));
+      const bigEnough = (e) => minDeal === 0 || (e.amount_usd ? e.amount_usd >= minDeal : showUndisclosed);
+      shownEdges = edges.filter((e) => pinnedEdges.has(e.key) || (shown.has(e.source) && shown.has(e.target) && bigEnough(e)));
       // Companies the filters left without a line would float alone.
       const linked = new Set(shownEdges.flatMap((e) => [e.source, e.target]));
       shownCompanies = shownCompanies.filter((c) => linked.has(c.key) || pinnedAgainstFilters.has(c.key));
     }
-    if (showAll || !focus || !byKey[focus]) return { nodes: shownCompanies, edges: shownEdges };
+    if (showAll || !focus || !byKey[focus]) return { nodes: shownCompanies, edges: shownEdges, centre: null };
     const keep = new Set([focus]);
     let frontier = new Set([focus]);
     for (let hop = 0; hop < 2; hop++) {
@@ -134,14 +143,14 @@ export default function App() {
     // Added after the walk, so highlighting companies inside the neighbourhood doesn't
     // change which companies are drawn (and doesn't move the map).
     for (const k of impacted) keep.add(k);
-    return { nodes: shownCompanies.filter((c) => keep.has(c.key)), edges: shownEdges.filter((e) => keep.has(e.source) && keep.has(e.target)) };
-  }, [showAll, companies, edges, focus, byKey, scenario?.edgesHit, highlight?.edges, impacted, holdingKeys, minDeal, minValue]);
+    return { nodes: shownCompanies.filter((c) => keep.has(c.key)), edges: shownEdges.filter((e) => keep.has(e.source) && keep.has(e.target)), centre: focus };
+  }, [showAll, companies, edges, focus, byKey, scenario?.edgesHit, highlight?.edges, impacted, holdingKeys, minDeal, showUndisclosed, minValue]);
 
   const visible = useMemo(
     () => foldBusy
-      ? { ...foldLeaves(neighbourhood.nodes, neighbourhood.edges, { pinned, unfolded }) }
-      : { ...neighbourhood, folds: {} },
-    [foldBusy, neighbourhood, pinned, unfolded]
+      ? collapseMap(neighbourhood.nodes, neighbourhood.edges, { focus: neighbourhood.centre, pinned, extra })
+      : { ...neighbourhood, more: {} },
+    [foldBusy, neighbourhood, pinned, extra]
   );
 
   const showPanel = (t) => {
@@ -149,17 +158,24 @@ export default function App() {
     setPanelOpen(true);
   };
 
-  const toggleFold = (key) => {
-    setUnfolded((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+  // A company's "+N" shows its next few folded connections; "Show fewer" folds them all back.
+  const showMore = (key) => setExtra((current) => ({ ...current, [key]: (current[key] || 0) + SHOW_MORE_STEP }));
+  const showFewer = (key) => {
+    setExtra((current) => {
+      const next = { ...current };
+      delete next[key];
       return next;
     });
   };
 
-  const focusCompany = (key) => {
+  // A newly centred map opens folded.
+  const changeFocus = (key) => {
     setFocus(key);
+    setExtra({});
+  };
+
+  const focusCompany = (key) => {
+    changeFocus(key);
     setSelected({ kind: "node", key });
     showPanel("details");
   };
@@ -247,25 +263,35 @@ export default function App() {
     return out;
   };
 
-  const cycles = useMemo(() => findCircularFinancing(edges).slice(0, 6), [edges]);
+  const loopGroups = useMemo(() => groupLoops(findCircularFinancing(edges)), [edges]);
   const shared = useMemo(() => findSharedDependencies(companies, edges, holdingKeys), [companies, edges, holdingKeys]);
 
-  // Draw one circular financing loop on the map, everything else faded.
-  const showCycle = (cycle, index) => {
+  // Draw money loops on the map, everything else faded: one route back to the investor, or
+  // (with no routeIndex) every route of the group.
+  const showLoop = (group, routeIndex) => {
     setScenario(null);
-    const nodes = Object.fromEntries(cycle.map((e) => [e.source, { value: 0.55, sign: -1, mark: true }]));
-    setHighlight({ id: `cycle-${index}`, kind: "loop", title: `Money loop: ${loopPath(cycle, byKey)}`, edges: new Set(cycle.map((e) => e.key)), impacts: nodes });
+    const routes = routeIndex == null ? group.routes : [group.routes[routeIndex]];
+    const loopEdges = routes.flat();
+    const nodes = Object.fromEntries(loopEdges.map((e) => [e.source, { value: 0.55, sign: -1, mark: true }]));
+    const { source, target } = group.investment;
+    const title = routes.length > 1
+      ? `Money loops: ${shortName(byKey[source]?.name)} → ${shortName(byKey[target]?.name)}, ${routes.length} ways back`
+      : `Money loop: ${loopPath(routes[0], byKey)}`;
+    const id = routeIndex == null ? `loop:${group.id}` : `loop:${group.id}:${routeIndex}`;
+    setHighlight({ id, kind: "loop", title, edges: new Set(loopEdges.map((e) => e.key)), impacts: nodes });
   };
 
   // The first screen leads with the biggest money loop, which shows what the map is for at a
   // glance. It runs before the first paint, so the map never shows without it. Phones keep the
   // sheet down so the map stays in view.
   useLayoutEffect(() => {
-    if (loading || !cycles.length) return;
-    showCycle(cycles[0], 0);
+    if (loading || !loopGroups.length) return;
+    const top = loopGroups[0];
+    const biggest = top.routes.reduce((a, b) => (loopFlow(b) > loopFlow(a) ? b : a));
+    showLoop(top, top.routes.indexOf(biggest));
     setSelected(null);
-    if (compact) setTab("risks");
-    else showPanel("risks");
+    if (compact) setTab("loops");
+    else showPanel("loops");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
@@ -301,9 +327,9 @@ export default function App() {
   const totalStake = holdings.reduce((s, h) => s + (h.stake_usd || 0), 0);
 
   // Canvas area covered by floating UI, which fitting the map keeps clear.
-  const cardWidth = wide ? 360 : 320;
+  const cardWidth = wide ? 380 : 368;
   // The key sits in the bottom-left corner; the map fits above it or beside it.
-  const key = mapKeySize(keyOpen, compact);
+  const key = mapKeySize(keyOpen, compact, minDeal > 0);
   const top = chip ? 116 : 72; // the search bar, plus the chip under it
   const insets = compact
     ? { top, right: 56, bottom: SHEET_PEEK + 8, left: 0, corner: { w: key.w + 24, h: SHEET_PEEK + key.h + 20 } }
@@ -311,8 +337,9 @@ export default function App() {
 
   const tabs = [
     { value: "details", label: "Details" },
+    { value: "loops", label: "Loops", badge: loopGroups.length },
     { value: "whatif", label: "What if" },
-    { value: "risks", label: "Risks", badge: cycles.length + shared.length },
+    { value: "risks", label: "Risks", badge: shared.length },
     { value: "portfolio", label: "Portfolio" },
   ];
 
@@ -328,12 +355,13 @@ export default function App() {
             ref={graphRef}
             nodes={visible.nodes}
             edges={visible.edges}
-            folds={visible.folds}
+            more={visible.more}
             holdings={holdings}
             focus={scenario?.impacts || highlight ? null : focus}
             selected={selected}
             onSelect={select}
-            onToggleFold={toggleFold}
+            onShowMore={showMore}
+            onShowFewer={showFewer}
             impacts={graphImpacts}
             edgesHit={graphEdgesHit}
             showLabels={showLabels}
@@ -383,6 +411,8 @@ export default function App() {
         onOpenChange={setKeyOpen}
         minDeal={minDeal}
         onMinDeal={setMinDeal}
+        showUndisclosed={showUndisclosed}
+        onShowUndisclosed={setShowUndisclosed}
         minValue={minValue}
         onMinValue={setMinValue}
       />
@@ -397,17 +427,29 @@ export default function App() {
             holdings={holdings}
             onSelect={setSelected}
             onFocus={(k) => {
-              setFocus(k);
+              changeFocus(k);
               setSelected({ kind: "node", key: k });
             }}
             onLookup={runLookup}
-            fold={visible.folds[selNode?.key]}
-            onToggleFold={toggleFold}
+            more={visible.more[selNode?.key]}
+            onShowMore={showMore}
+            onShowFewer={showFewer}
             onAddHolding={async (c) => {
               await api.addHolding(c.key, c.name, 2.5e7);
               reload();
             }}
             lookupBusy={!!lookup && !lookup.done && !lookup.error}
+          />
+        )}
+        {tab === "loops" && (
+          <Loops
+            groups={loopGroups}
+            byKey={byKey}
+            holdingKeys={holdingKeys}
+            activeId={highlight?.id}
+            onShowLoop={showLoop}
+            onSelectEdge={(key) => select({ kind: "edge", key })}
+            onClear={() => setHighlight(null)}
           />
         )}
         {tab === "whatif" && (
@@ -424,13 +466,10 @@ export default function App() {
         )}
         {tab === "risks" && (
           <Risks
-            cycles={cycles}
             shared={shared}
             byKey={byKey}
             holdings={holdings}
             activeId={highlight?.id}
-            onShowCycle={showCycle}
-            onSelectEdge={(key) => select({ kind: "edge", key })}
             onShowShared={(s, id) => {
               setScenario(null);
               const imp = { [s.company]: { value: 0.8, sign: -1, origin: true, mark: true } };

@@ -5,7 +5,15 @@
 import { companyKey } from "../../shared/seed.js";
 import type { Doc } from "./brightdata.ts";
 
-export const TYPES = ["owner", "investment", "venture", "hardware", "cloud", "software", "acquisition", "partnership", "competitor"];
+export const TYPES = ["owner", "investment", "venture", "hardware", "cloud", "software", "supply", "acquisition", "partnership", "competitor"];
+
+// What the other company is to the company of interest. The model names the role, which it
+// gets right far more often than "who pays": asked for source/target, it put the provider
+// first ("Microsoft → Anthropic" for Anthropic buying Azure capacity). Code sets the direction.
+const ROLES = ["supplier", "customer", "investor", "investee", "acquirer", "acquired", "partner", "competitor"];
+// Roles whose counterparty receives the company's money: the edge runs company → counterparty.
+const PAID_BY_COMPANY = new Set(["supplier", "investee", "acquired"]);
+const COMMERCIAL = ["hardware", "cloud", "software", "supply"];
 
 // What a lookup learned about a company. `kind` overwrites the saved kind; `defaultKind` is
 // only used when the company is new. `estimate` is the model's own guess at its value.
@@ -70,9 +78,9 @@ const EXTRACT_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          source: { type: "string", description: "Company the money flows FROM (investor, buyer, acquirer)" },
-          target: { type: "string", description: "Company the money flows TO (investee, seller, acquired)" },
-          type: { type: "string", enum: TYPES },
+          counterparty: { type: "string", description: "The other company or investor" },
+          role: { type: "string", enum: ROLES, description: "What the counterparty is to the company of interest, e.g. 'supplier' if the company buys from it" },
+          type: { type: "string", enum: TYPES.filter((t) => t !== "owner"), description: "What the deal is about" },
           amount_usd: { type: "number", description: "Deal size in USD, 0 if not stated" },
           label: { type: "string", description: "Callout under 70 characters, e.g. 'Nvidia to invest up to $100B in OpenAI'" },
           date: { type: "string", description: "YYYY-MM or YYYY-MM-DD if stated" },
@@ -80,7 +88,7 @@ const EXTRACT_SCHEMA = {
           evidence: { type: "string", description: "Short verbatim quote from that document" },
           confidence: { type: "number", description: "0 to 1" },
         },
-        required: ["source", "target", "type", "doc_id", "evidence"],
+        required: ["counterparty", "role", "type", "doc_id", "evidence"],
       },
     },
   },
@@ -93,8 +101,9 @@ function extractionPrompt(name: string, docs: Doc[] | null, hints: string[]) {
 Company of interest: "${name}".
 Funding: put every funding round of "${name}" in funding_rounds and list EVERY investor the documents name for it, one name per entry: leads in lead_investors, everyone else ("with participation from", "existing investors", "also joined") in other_investors. If a document lists 15 investors, return all 15. The round total belongs to the round only, never to a single investor. Do not repeat round investors in relationships.
 Ownership: if a document says "${name}" is owned by, a subsidiary of, or majority-owned by another company, fill company.parent.
-List every other concrete relationship between "${name}" and another named company or investor in relationships: direct investments outside a round (type "investment" for corporate investors, "venture" for VC funds), acquisitions, purchases of chips/hardware ("hardware"), cloud or compute contracts ("cloud"), software/customer relationships ("software": the customer is the source, the vendor is the target), partnerships, and named competitors.
-Direction rule: source is who pays (investor, buyer, customer, acquirer); target is who receives the money.
+Suppliers and customers matter as much as investors. In relationships, list EVERY company the documents say sells to, supplies, hosts, manufactures for or licenses to "${name}" (role "supplier"), and EVERY company that buys from or uses "${name}" (role "customer"), one entry per company. If a document names 10 customers, return all 10. Type them by what is bought: chips or hardware ("hardware"), cloud or compute ("cloud"), software, AI models or online services ("software"), anything else such as components, manufacturing, vehicles, logistics or licensing ("supply").
+Also list in relationships: investments outside a round (role "investor" if it invests in "${name}", "investee" if "${name}" invests in it; type "investment" for companies, "venture" for VC funds), acquisitions (role "acquired" if "${name}" bought it, "acquirer" if it bought "${name}"; type "acquisition"), partnerships where neither side buys from the other (role "partner", type "partnership") and named competitors (role "competitor", type "competitor").
+role is what the counterparty is to "${name}", read from who sells to whom: "Google provides TPUs to Anthropic" makes Google Anthropic's supplier, and Anthropic Google's customer. A "partnership" in which one side buys from the other is a supplier or customer relationship.
 Use canonical company names (e.g. "Nvidia", not "NVIDIA Corporation"; "Andreessen Horowitz", not "a16z"). Add every investor and counterparty to counterparties with its kind. Skip people, governments and unnamed parties.
 Only include relationships the documents actually state; do not use outside knowledge. Copy a short verbatim quote as evidence.
 Ignore news on the page that is about other companies and does not involve "${name}".
@@ -124,6 +133,16 @@ export const isDirectName = (n?: string) => !!n && norm(n).replace(/ /g, "").sta
 
 // Fragments the model sometimes returns instead of an investor's name.
 const GENERIC = /^(capital|ventures?|partners|investors?|management|funds?|others|existinginvestors|newinvestors|and|various|.{0,1})$/;
+
+// The edge type for a relationship, checked against the counterparty's role: where they
+// disagree, the role decides (a supplier filed as a "partnership" is a supply deal).
+// investorKind is the kind of whoever invests.
+function typeFor(role: string, type: string, investorKind?: string) {
+  if (role === "supplier" || role === "customer") return COMMERCIAL.includes(type) ? type : "supply";
+  if (role === "investor" || role === "investee") return type === "investment" || type === "venture" ? type : investorKind === "investor" ? "venture" : "investment";
+  if (role === "acquirer" || role === "acquired") return "acquisition";
+  return role === "partner" ? "partnership" : "competitor";
+}
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 function whenLabel(date?: string) {
@@ -237,26 +256,31 @@ export function edgesFromExtraction(result: any, docs: Doc[] | null, key: string
     }
   }
 
-  // 3. Everything else (partnerships, acquisitions, customers, direct investments).
+  // 3. Everything else (suppliers, customers, direct investments, acquisitions,
+  // partnerships). The counterparty's role sets the direction.
   for (const r of result?.relationships || []) {
-    if (!TYPES.includes(r.type) || r.type === "owner") continue;
-    const s = companyKey(r.source);
-    const t = companyKey(r.target);
-    const other = s === key ? t : s;
+    const other = companyKey(r.counterparty);
+    if (!other || !ROLES.includes(r.role)) continue;
+    const type = typeFor(r.role, r.type, r.role === "investee" ? info[key]?.kind : info[other]?.kind || "investor");
     // Round investors were already added above; don't add them twice under another type.
-    if ((r.type === "investment" || r.type === "venture") && (byKey.has(`${other}|venture|${key}`) || byKey.has(`${other}|investment|${key}`) || other === parentKey)) continue;
+    if (r.role === "investor" && (byKey.has(`${other}|venture|${key}`) || byKey.has(`${other}|investment|${key}`) || other === parentKey)) continue;
     const src = sourceFor(r.doc_id, r.evidence);
     if (!src) continue;
+    let [s, t] = PAID_BY_COMPANY.has(r.role) ? [key, other] : [other, key];
+    // Partners and competitors have no money direction: one fixed order, so the same
+    // partnership found from either side is one edge.
+    if (type === "partnership" || type === "competitor") [s, t] = [s, t].sort();
     // A round's total is never one investor's cheque.
     const amount = r.amount_usd > 0 && !roundTotals.some((x) => Math.abs(x - r.amount_usd) / x < 0.05) ? r.amount_usd : 0;
+    const nameOf = (k: string) => (k === key ? name : r.counterparty);
     addEdge({
-      key: `${s}|${r.type}|${t}`, source: s, target: t, type: r.type,
+      key: `${s}|${type}|${t}`, source: s, target: t, type,
       ...(amount ? { amount_usd: amount } : {}),
       label: String(r.label || "").slice(0, 90),
       ...(r.date ? { date: r.date } : {}),
       source_url: src.source_url, confidence: Math.min(src.confidence, Math.max(0.3, r.confidence ?? 0.8)),
       evidence: String(r.evidence || "").slice(0, 300), origin,
-    }, r.source, r.target);
+    }, nameOf(s), nameOf(t));
   }
   for (const e of edges) delete e.rounds;
 

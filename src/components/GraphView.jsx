@@ -67,8 +67,10 @@ function arcPath(s, t, rS, rT, bend = 0.18) {
 }
 
 function edgeArc(e, s, t) {
-  return arcPath(s, t, s.r, t.r, e.type === "competitor" ? 0.08 : 0.2);
+  return arcPath(s, t, s.r, t.r, e.type === "more" ? 0 : e.type === "competitor" ? 0.08 : 0.2);
 }
+
+const MORE_RADIUS = 15; // a "+N" node
 
 const shortName = (name) => name.replace(/\s*\(.*\)/, "");
 
@@ -78,10 +80,11 @@ const startAngle = (key) => ([...key].reduce((h, ch) => (h * 31 + ch.charCodeAt(
 
 /**
  * Force-directed relationship map. `insets` ({top, right, bottom, left, corner?}) is the part of the
- * canvas covered by floating UI, which fitting keeps nodes out of. The ref exposes
- * zoomIn / zoomOut / fit for external map controls.
+ * canvas covered by floating UI, which fitting keeps nodes out of. `more` ({ key: { count } }) gives
+ * each company with folded connections a "+N" node; clicking it calls onShowMore, or onShowFewer once
+ * nothing is left to show. The ref exposes zoomIn / zoomOut / fit for external map controls.
  */
-const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus, selected, onSelect, impacts, edgesHit, showLabels, insets, folds = {}, onToggleFold }, ref) {
+const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus, selected, onSelect, impacts, edgesHit, showLabels, insets, more = {}, onShowMore, onShowFewer }, ref) {
   const svgRef = useRef(null);
   const gRef = useRef(null);
   const simRef = useRef(null);
@@ -110,16 +113,25 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
     return () => ro.disconnect();
   }, []);
 
+  // A "+N" node sits beside each company with folded connections, joined to it by a dashed line.
+  const { mapNodes, mapEdges } = useMemo(() => {
+    const hubs = Object.keys(more);
+    return {
+      mapNodes: [...nodes, ...hubs.map((hub) => ({ key: `more:${hub}`, moreOf: hub, count: more[hub].count }))],
+      mapEdges: [...edges, ...hubs.map((hub) => ({ key: `more:${hub}`, source: hub, target: `more:${hub}`, type: "more" }))],
+    };
+  }, [nodes, edges, more]);
+
   // Simulation nodes/links are copies that keep their positions across renders.
   const simNodes = useMemo(
     () =>
-      nodes.map((n) => {
+      mapNodes.map((n) => {
         const p = posRef.current[n.key];
-        const o = { ...n, r: nodeRadius(n), x: p?.x, y: p?.y };
+        const o = { ...n, r: n.moreOf ? MORE_RADIUS : nodeRadius(n), x: p?.x, y: p?.y };
         if (o.x == null) {
           const ang = startAngle(n.key);
           let neighbour;
-          for (const e of edges) {
+          for (const e of mapEdges) {
             const other = e.source === n.key ? e.target : e.target === n.key ? e.source : null;
             if (other && posRef.current[other]) {
               neighbour = posRef.current[other];
@@ -132,12 +144,12 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
         return o;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [nodes, edges],
+    [mapNodes, mapEdges],
   );
   const byKey = useMemo(() => Object.fromEntries(simNodes.map((n) => [n.key, n])), [simNodes]);
   const simLinks = useMemo(
-    () => edges.filter((e) => byKey[e.source] && byKey[e.target]).map((e) => ({ ...e, s: e.source, t: e.target })),
-    [edges, byKey],
+    () => mapEdges.filter((e) => byKey[e.source] && byKey[e.target]).map((e) => ({ ...e, s: e.source, t: e.target })),
+    [mapEdges, byKey],
   );
 
   const paint = () => {
@@ -210,12 +222,16 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
     const links = simLinks.map((l) => ({ source: l.s, target: l.t, l }));
     // Pull harder across the short side of the screen so the layout takes the screen's shape
     // (tall on phones, wide on desktops). The charge is the same for every company, so distance
-    // on the map doesn't depend on size.
+    // on the map doesn't depend on size. A "+N" node is held tightly to its company, and the other
+    // companies' charge pushes it to the company's outer side.
     const aspect = size.w / size.h;
+    const isMore = (link) => link.l.type === "more";
     const sim = forceSimulation(simNodes)
-      .force("link", forceLink(links).id((d) => d.key).distance((d) => 95 + d.source.r + d.target.r).strength(0.3))
-      .force("charge", forceManyBody().strength(-1000))
-      .force("collide", forceCollide().radius((d) => d.r + 30))
+      .force("link", forceLink(links).id((d) => d.key)
+        .distance((d) => (isMore(d) ? 20 : 95) + d.source.r + d.target.r)
+        .strength((d) => (isMore(d) ? 1 : 0.3)))
+      .force("charge", forceManyBody().strength((d) => (d.moreOf ? -200 : -1000)))
+      .force("collide", forceCollide().radius((d) => d.r + (d.moreOf ? 0 : 30)))
       .force("center", forceCenter(size.w / 2, size.h / 2))
       .force("x", forceX(size.w / 2).strength(0.03 / Math.min(1, aspect)))
       .force("y", forceY(size.h / 2).strength(0.04 * Math.min(1, aspect)))
@@ -296,7 +312,11 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
     simRef.current.alphaTarget(0);
     n.fx = null;
     n.fy = null;
-    if (!moved) onSelect({ kind: "node", key: n.key });
+    if (!moved) {
+      if (!n.moreOf) onSelect({ kind: "node", key: n.key });
+      else if (n.count) onShowMore?.(n.moreOf);
+      else onShowFewer?.(n.moreOf);
+    }
     drag.current = null;
   };
 
@@ -310,6 +330,7 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
     }
     return s;
   }, [focus, edges]);
+  const isDimmed = (key) => (impactMode && !impacts[key]) || (!impactMode && focusSet && !focusSet.has(key));
 
   // Edge lines are drawn under the nodes and their labels above them, so a callout is never
   // hidden behind a company.
@@ -319,6 +340,22 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
     const s = byKey[e.source], t = byKey[e.target];
     if (s?.x == null || t?.x == null) continue;
     const { d, mx, my } = edgeArc(e, s, t);
+    if (e.type === "more") {
+      edgeLines.push(
+        <g
+          key={e.key}
+          ref={(el) => {
+            if (el) edgeEls.current.set(e.key, el);
+            else edgeEls.current.delete(e.key);
+          }}
+          opacity={isDimmed(e.source) ? 0.3 : 0.8}
+          pointerEvents="none"
+        >
+          <path d={d} fill="none" stroke={c.select} strokeWidth={1.2} strokeDasharray="3 3" />
+        </g>,
+      );
+      continue;
+    }
     const meta = EDGE_TYPES[e.type] || EDGE_TYPES.partnership;
     const hit = impactMode && edgesHit?.has(e.key);
     const isSel = selected?.kind === "edge" && selected.key === e.key;
@@ -407,18 +444,36 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
         {edgeLines}
         {/* Nodes */}
         {simNodes.map((n) => {
+          if (n.moreOf) {
+            const hubName = shortName(byKey[n.moreOf].name);
+            return (
+              <g
+                key={n.key}
+                ref={(el) => {
+                  if (el) nodeEls.current.set(n.key, el);
+                  else nodeEls.current.delete(n.key);
+                }}
+                data-node
+                transform={`translate(${n.x},${n.y})`}
+                opacity={isDimmed(n.moreOf) ? 0.3 : 1}
+                className="cursor-pointer"
+                onPointerDown={(ev) => onPointerDown(ev, n)}
+              >
+                <title>{n.count ? `Show more of ${hubName}'s connections` : `Fold ${hubName}'s connections back`}</title>
+                <circle r={n.r} fill={mix(c.node, c.select, 0.12)} stroke={c.select} strokeWidth={1.5} strokeDasharray="3 2.5" />
+                <text textAnchor="middle" dominantBaseline="central" fontSize={n.count >= 100 ? 10 : 11} fontWeight={600} fill={c.select}>
+                  {n.count ? `+${n.count}` : "−"}
+                </text>
+              </g>
+            );
+          }
           const imp = impacts?.[n.key];
           const isHolding = holdingSet.has(n.key);
           const isSel = selected?.kind === "node" && selected.key === n.key;
           const isFocus = n.key === focus;
-          const dim = (impactMode && !imp) || (!impactMode && focusSet && !focusSet.has(n.key));
+          const dim = isDimmed(n.key);
           const fill = impactFill(imp, c);
           const inside = n.r > 22;
-          const fold = folds[n.key];
-          const foldText = fold?.open ? "−" : fold ? `+${fold.count}` : "";
-          const foldWidth = foldText.length * 5.5 + 8;
-          const foldX = n.r * 0.7;
-          const foldY = -n.r * 0.7;
           return (
             <g
               key={n.key}
@@ -462,17 +517,6 @@ const GraphView = forwardRef(function GraphView({ nodes, edges, holdings, focus,
                 <text textAnchor="middle" y={inside ? n.r + 13 : n.r + 26} fontSize={10.5} fontWeight={700} className="node-label" fill={imp.sign < 0 ? c.riskText : c.gainText}>
                   {imp.sign < 0 ? "−" : "+"}{Math.round(imp.value * 100)}
                 </text>
-              )}
-              {fold && (
-                <g
-                  className="cursor-pointer"
-                  onPointerDown={(ev) => ev.stopPropagation()}
-                  onClick={(ev) => { ev.stopPropagation(); onToggleFold?.(n.key); }}
-                >
-                  <title>{fold.open ? `Fold ${fold.count} connections` : `Show ${fold.count} more connections`}</title>
-                  <rect x={foldX - foldWidth / 2} y={foldY - 7} width={foldWidth} height={14} rx={7} fill={c.select} />
-                  <text x={foldX} y={foldY} textAnchor="middle" dominantBaseline="middle" fontSize={9.5} fontWeight={600} fill="#fff">{foldText}</text>
-                </g>
               )}
             </g>
           );

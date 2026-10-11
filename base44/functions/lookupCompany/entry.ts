@@ -11,7 +11,10 @@
 // found now replaces a stored grounded one even if that one is dated later, provided this
 // run saw the stored value (its amount or its page) and ranked another above it: that
 // redoes values grounded by earlier, less strict versions of valuation.ts without letting
-// a search that missed the better sources downgrade a good value.
+// a search that missed the better sources downgrade a good value. A stored value that this
+// run rejected (another company's, or stale), or that doesn't hold up on its own quote and
+// page, is removed when nothing replaces it (a curated company gets its curated value back).
+// With force (for companies checked by hand), the value found replaces the stored one.
 //
 // Each round saves what it found and returns `next_round` and `state` (pass both back)
 // until research is done; `background` marks the slow Crunchbase round, which a client
@@ -27,7 +30,7 @@ import { companyKey } from "../../shared/seed.js";
 import { BrightData, type Doc, type Query, searchAndRead } from "./brightdata.ts";
 import { CRUNCHBASE_DATASET, edgesFromRecord, findProfile, sameCompany } from "./crunchbase.ts";
 import { type CompanyInfo, edgesFromExtraction, extract, isDirectName, norm } from "./extract.ts";
-import { type Candidate, groundValues, type Valuation } from "./valuation.ts";
+import { type Candidate, groundValues, storedValuesHold, type Target, type Valuation } from "./valuation.ts";
 
 const CACHE_HOURS = 72;
 // Collecting one Crunchbase profile took 5 to 11 minutes in testing.
@@ -80,7 +83,7 @@ Deno.serve(async (req) => {
     const ctx: Ctx = { base44, db: base44.asServiceRole.entities, bd, log };
     if (body.action === "values" && !bd) return Response.json({ error: "values need BRIGHTDATA_API_KEY" }, { status: 400 });
     const out = body.action === "values"
-      ? await refreshValues(ctx, body.keys.slice(0, 8), !!body.dry_run, !!body.reverify)
+      ? await refreshValues(ctx, body.keys.slice(0, 8), { dryRun: !!body.dry_run, reverify: !!body.reverify, force: !!body.force })
       : round === 1 ? await firstRound(ctx, body) : round === 2 ? await secondRound(ctx, body.key, body.state) : await crunchbaseRound(ctx, body.key, body.state);
     if (bd) log.push(bd.summary());
     return Response.json({ ...out, round, log, ms: Date.now() - started });
@@ -114,7 +117,7 @@ async function firstRound({ base44, db, bd, log }: Ctx, body: any) {
   let docs: Doc[] | null = null;
   let values: Valuation[] = [];
   if (bd) {
-    const valuing = groundValues(bd, base44, [{ key, name }], log);
+    const valuing = groundValues(bd, base44, [{ key, name, kind: existing?.kind, context: [existing?.sector, existing?.description].filter(Boolean).join("; ") }], log);
     const crunchbase = startCrunchbase(bd, name, log);
     const searched = await searchAndRead(bd, name, [
       // Plain-language queries: Google answers them faster and more reliably than long
@@ -122,6 +125,8 @@ async function firstRound({ base44, db, bd, log }: Ctx, body: any) {
       { q: `${name} investors funding round` },
       { q: `"${name}" partnership OR acquires OR "deal with" OR customer OR supplier` },
       { q: `${name} parent company owner` },
+      // Who the company buys from: without it a lookup found investors but few suppliers.
+      { q: `${name} suppliers` },
     ], log);
     const late = <T>(p: Promise<T>) => Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ROUND_ONE_GRACE_MS))]);
     const [valued, started] = await Promise.all([late(valuing), late(crunchbase)]);
@@ -154,14 +159,17 @@ async function secondRound({ base44, db, bd, log }: Ctx, key: string, state: Sta
     .map((k) => companies.get(k))
     .filter((c) => c && c.kind !== "investor" && needsValue(c))
     .slice(0, 5)
-    .map((c) => ({ key: c.key, name: c.name }));
+    .map((c) => target(c, touching, companies));
   // Round 1's failed searches go again. A lookup resumed from the cache hasn't started
-  // Crunchbase yet.
+  // Crunchbase yet. Customers and suppliers get a search each; a public company's annual
+  // report names the customers that make up a large share of its revenue.
   const queries: Query[] = [
     ...(state.retry || []),
     { q: `${name} funding round led by` },
     { q: `${name} acquisition` },
-    { q: `${name} biggest customers suppliers contracts` },
+    { q: `${name} biggest customers` },
+    { q: `${name} supplier agreement contract` },
+    ...(companies.get(key)?.kind === "public" ? [{ q: `${name} 10-K major customers percent of revenue` }] : []),
   ];
   state.retry = [];
   const [{ docs }, values, crunchbase] = await Promise.all([
@@ -261,6 +269,16 @@ async function extractEdges(base44: any, name: string, key: string, docs: Doc[] 
   return { edges, companies, valuations: [] };
 }
 
+// A company to value, with what the graph knows about it (to tell it from namesakes):
+// sector, description and a few of its relationships.
+function target(c: any, edges: any[], companies: Map<string, any>): Target {
+  const links = edges
+    .filter((e) => e.source === c.key || e.target === c.key)
+    .slice(0, 3)
+    .map((e) => `${e.type} with ${companies.get(e.source === c.key ? e.target : e.source)?.name || "?"}${e.label ? ` (${e.label})` : ""}`);
+  return { key: c.key, name: c.name, kind: c.kind, context: [c.sector, c.description, ...links].filter(Boolean).join("; ").slice(0, 400) };
+}
+
 // Whether a company's value should be grounded (again): it has none from a page, or the
 // one it has is older than VALUE_MAX_AGE_DAYS.
 function needsValue(c: any) {
@@ -269,16 +287,31 @@ function needsValue(c: any) {
 }
 
 // Ground the values of companies already on the graph; with dryRun, only report them.
-async function refreshValues({ base44, db, bd, log }: Ctx, keys: string[], dryRun: boolean, reverify: boolean) {
-  const companies = await companiesByKey(db);
+async function refreshValues({ base44, db, bd, log }: Ctx, keys: string[], { dryRun = false, reverify = false, force = false } = {}) {
+  const [companies, edges] = await Promise.all([companiesByKey(db), db.Relationship.list("-created_date", 5000)]);
   const rows = keys.map((k) => companies.get(k)).filter(Boolean);
   const candidates: Candidate[] = [];
-  const values = await groundValues(bd!, base44, rows.map((c) => ({ key: c.key, name: c.name })), log, candidates);
+  const values = await groundValues(bd!, base44, rows.map((c) => target(c, edges, companies)), log, candidates);
   const byKey = new Map(values.map((v) => [v.key, v]));
+  // Stored grounded values that nothing new replaces: do they still hold up on their own?
+  const unreplaced = reverify ? rows.filter((c) => c.value_source === "article" && !byKey.has(c.key)) : [];
+  const holds = await storedValuesHold(base44, unreplaced.map((c) => ({ ...target(c, edges, companies), quote: c.value_evidence || "", url: c.value_source_url || "", basis: c.value_basis, as_of: c.value_as_of })));
+  const failing = new Set(unreplaced.filter((_, i) => !holds[i]).map((c) => c.key));
   const updates: [string, any][] = [];
   const report = rows.map((c) => {
-    const seenStored = candidates.some((x) => x.key === c.key && ((c.value_usd && Math.abs(x.amount_usd - c.value_usd) / c.value_usd < 0.03) || x.url === c.value_source_url));
-    const patch = valuePatch(c, undefined, byKey.get(c.key), reverify && seenStored);
+    const near = (amount: number) => !!c.value_usd && Math.abs(amount - c.value_usd) / c.value_usd < 0.03;
+    const stored = candidates.filter((x) => x.key === c.key && (near(x.amount_usd) || x.url === c.value_source_url));
+    const found = byKey.get(c.key);
+    // Re-verifying only matters when the value found differs from the stored one; the same
+    // value (within 3%) keeps whichever reading is newer.
+    const replace = force || (reverify && stored.length > 0 && !!found && !near(found.amount_usd));
+    let patch: any = valuePatch(c, undefined, found, replace);
+    // A grounded value goes if this run judged its own page another company's or stale, or
+    // it doesn't hold up on its own quote and page.
+    const rejected = stored.some((x) => x.url === c.value_source_url && ["different company", "stale market cap"].includes(x.verdict)) || failing.has(c.key);
+    if (reverify && !found && c.value_source === "article" && rejected) {
+      patch = c.seed_value_usd != null ? { value_usd: c.seed_value_usd, value_source: "seed" } : { value_usd: 0, value_source: "llm_estimate" };
+    }
     if (Object.keys(patch).length) updates.push([c.id, patch]);
     return {
       key: c.key, name: c.name, changed: Object.keys(patch).length > 0, found: byKey.get(c.key) || null,
@@ -315,6 +348,12 @@ async function edgesTouching(db: any, key: string) {
 // Two edges describe the same relationship when they join the same companies the same way;
 // owner, investment and venture are all one capital relationship.
 const relationshipKey = (e: any) => `${e.source}|${["owner", "investment", "venture"].includes(e.type) ? "capital" : e.type}|${e.target}`;
+
+// Types where the same type both ways between two companies is one relationship saved the
+// wrong way round. For commercial deals that was the old extraction's mistake (asked who
+// pays, it often put the provider first); partners and competitors now have one fixed
+// order. Capital edges aren't here: two companies can invest in each other.
+const REVERSIBLE = new Set(["hardware", "cloud", "software", "supply", "partnership", "competitor"]);
 
 // Value precedence: a grounded value (dated, quoted from a page) wins, and a newer one
 // replaces an older one (with reverify, any one does). It also replaces a curated demo
@@ -353,7 +392,8 @@ async function pool<T>(items: T[], fn: (item: T) => Promise<unknown>, size = 3) 
 
 // Save a round's findings and return the keys of the edges it found. Round 1 refreshes: it
 // replaces what an earlier lookup saved between the same two companies. Later rounds only
-// add or improve, so they never undo what an earlier round of the same lookup found.
+// add or improve, so they never undo what an earlier round of the same lookup found, except
+// a deal saved the other way round (see REVERSIBLE).
 async function save(db: any, key: string, found: Found, log: string[], { refresh = false, crunchbaseUrl = "" } = {}) {
   // Read once, then write in bulk or a few at a time: Base44 rate-limits bursts of
   // one-by-one calls, which a lookup with 30+ investors easily triggers.
@@ -419,22 +459,25 @@ async function save(db: any, key: string, found: Found, log: string[], { refresh
       newEdges.push(e);
     } else if (changed(row, e)) edgeUpdates.push([row.id, e]);
   }
+  const fresh = new Set(found.edges.map((e) => e.key));
   // A refresh supersedes older live edges between the same two companies under another
   // type (e.g. an investor first saved as "investment" with the whole round's total).
   let stale = 0;
   if (refresh) {
     const pairs = new Set(found.edges.map((e) => `${e.source}|${e.target}`));
-    const fresh = new Set(found.edges.map((e) => e.key));
     const outdated = touching.filter((r: any) => r.origin !== "seed" && !fresh.has(r.key) && pairs.has(`${r.source}|${r.target}`));
     edgeDeletes.push(...outdated.map((r: any) => r.id));
     stale = outdated.length;
   }
+  // Every round: an edge found now replaces one of the same type saved the other way round.
+  const reversed = touching.filter((r: any) => r.origin !== "seed" && REVERSIBLE.has(r.type) && !fresh.has(r.key) && fresh.has(`${r.target}|${r.type}|${r.source}`));
+  edgeDeletes.push(...reversed.map((r: any) => r.id).filter((id: string) => !edgeDeletes.includes(id)));
 
   if (newCompanies.length) await db.Company.bulkCreate(newCompanies);
   await pool(companyUpdates, ([id, patch]) => db.Company.update(id, patch));
   await pool(edgeDeletes, (id) => db.Relationship.delete(id));
   if (newEdges.length) await db.Relationship.bulkCreate(newEdges);
   await pool(edgeUpdates, ([id, patch]) => db.Relationship.update(id, patch));
-  log.push(`saved: ${newEdges.length} new, ${edgeUpdates.length} updated${stale ? `, replaced ${stale} outdated` : ""}`);
+  log.push(`saved: ${newEdges.length} new, ${edgeUpdates.length} updated${stale ? `, replaced ${stale} outdated` : ""}${reversed.length ? `, replaced ${reversed.length} reversed` : ""}`);
   return keysFound;
 }

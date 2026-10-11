@@ -26,7 +26,7 @@ export function SegmentedControl({ options, value, onChange, size = 'md', ariaLa
             role="tab"
             aria-selected={active}
             onClick={() => onChange(o.value)}
-            className={`relative z-10 flex min-w-0 items-center justify-center gap-1 px-1.5 font-medium transition-colors duration-200 ${height} ${active ? 'text-label' : 'text-label-2 hover:text-label'}`}
+            className={`relative z-10 flex min-w-0 items-center justify-center gap-1 px-[3px] font-medium transition-colors duration-200 ${height} ${active ? 'text-label' : 'text-label-2 hover:text-label'}`}
           >
             <span className="truncate">{o.label}</span>
             {o.badge > 0 && (

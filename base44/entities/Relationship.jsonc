@@ -8,7 +8,7 @@
     "target": { "type": "string", "description": "Company key of the receiver / investee / acquired" },
     "type": {
       "type": "string",
-      "enum": ["owner", "investment", "venture", "hardware", "cloud", "software", "acquisition", "partnership", "competitor"]
+      "enum": ["owner", "investment", "venture", "hardware", "cloud", "software", "supply", "acquisition", "partnership", "competitor"]
     },
     "amount_usd": { "type": "number", "description": "Deal size in USD when reported" },
     "label": { "type": "string", "description": "One-line callout shown on the graph" },

@@ -7,6 +7,8 @@
 //   ... --reverify   (replace stored grounded values even when dated later, to redo values
 //                     grounded by earlier, less strict versions)
 //   ... --shard 0/2  (only every 2nd company starting at 0, to run two copies in parallel)
+//   ... --keys anthropic --force   (replace the stored value with the one found, for
+//                                   companies whose value was checked by hand)
 // Funds and VC firms (kind "investor") have no valuation and are skipped.
 
 import { createClient } from "@base44/sdk";
@@ -18,6 +20,7 @@ const apply = args.includes("--apply");
 const onlyKeys = args.includes("--keys") ? args[args.indexOf("--keys") + 1].split(",") : null;
 const verbose = args.includes("--verbose");
 const reverify = args.includes("--reverify");
+const force = args.includes("--force") && !!onlyKeys;
 const [shard, shards] = args.includes("--shard") ? args[args.indexOf("--shard") + 1].split("/").map(Number) : [0, 1];
 
 const base44 = createClient({ appId: APP_ID, serverUrl: "https://base44.app", requiresAuth: false });
@@ -31,7 +34,7 @@ const rows = [];
 let calls = 0;
 for (let i = 0; i < companies.length; i += BATCH) {
   const keys = companies.slice(i, i + BATCH).map((c) => c.key);
-  const res = (await base44.functions.invoke("lookupCompany", { action: "values", keys, dry_run: !apply, reverify })).data;
+  const res = (await base44.functions.invoke("lookupCompany", { action: "values", keys, dry_run: !apply, reverify, force })).data;
   calls += Number((res.log || []).join(" ").match(/bright data: (\d+) calls/)?.[1] || 0);
   if (res.error) console.log(`  batch failed: ${res.error}`);
   for (const v of res.values || []) {

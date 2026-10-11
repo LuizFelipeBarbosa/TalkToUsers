@@ -10,9 +10,11 @@ export type Doc = { id: number; url: string; title: string; text: string };
 export type Query = { q: string; read?: boolean };
 
 const ARTICLE_CHARS = 10000;
-// Passages worth keeping when an article is longer than ARTICLE_CHARS: investor lists
-// often sit deep in a page (e.g. Wikipedia, long news features).
-const RELEVANT = /(invest|led by|co-led|participat|funding|raised|raises|round|backer|valuation|valued|market cap|owner|owned|subsidiary|parent|stake|acqui|partner|customer|supplier|contract|deal)/gi;
+// Passages worth keeping when an article is longer than ARTICLE_CHARS: investor lists and
+// supplier or customer mentions often sit deep in a page (e.g. Wikipedia, long features).
+// Only words that name a relationship: topic words ("cloud", "chips") match nearly every
+// paragraph of a tech article, which would keep only the page's start.
+const RELEVANT = /(invest|led by|co-led|participat|funding|raised|raises|round|backer|valuation|valued|market cap|owner|owned|subsidiary|parent|stake|acqui|partner|customer|client|suppl|vendor|purchas|procur|manufactur|foundry|licens|contract|agreement|deal)/gi;
 const SKIP_HOSTS = /(youtube\.com|facebook\.com|instagram\.com|tiktok\.com|x\.com|twitter\.com|reddit\.com|linkedin\.com\/in\/|glassdoor\.|indeed\.)/i;
 
 // Google searches at once per request: more than this and the SERP zone starts timing out
@@ -188,11 +190,12 @@ export async function searchAndRead(
   const answered = queries.length - failed.length;
   log.push(`search: ${seen.size} results from ${answered}/${queries.length} queries in ${Date.now() - t0}ms`);
 
-  // The company's own site (its newsroom/blog) comes first: funding posts list every investor.
+  // The company's own site (its newsroom/blog) comes first: funding posts list every
+  // investor, and customer, partner and supplier pages name the companies it deals with.
   const own = companyKey(name);
   const isOwn = (u: string) => own.length > 2 && companyKey(host(u).split(".").slice(-2, -1)[0] || "") === own;
-  const funding = (d: Doc) => /invest|rais|fund|round|backer/i.test(d.url + " " + d.title);
-  const ownDocs = candidates.filter((d) => isOwn(d.url)).sort((a, b) => Number(funding(b)) - Number(funding(a))).slice(0, 3);
+  const dealPage = (d: Doc) => /invest|rais|fund|round|backer|customer|partner|supplier|case-stud/i.test(d.url + " " + d.title);
+  const ownDocs = candidates.filter((d) => isOwn(d.url)).sort((a, b) => Number(dealPage(b)) - Number(dealPage(a))).slice(0, 3);
   const toRead = [...ownDocs, ...candidates.filter((d) => !isOwn(d.url))].slice(0, maxArticles + 2);
 
   const t1 = Date.now();

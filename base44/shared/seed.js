@@ -1,6 +1,7 @@
-// Demo data: the AI "vendor financing" cluster (after Bloomberg's chart) plus three
-// companies from the first live-lookup test. Every relationship carries the article
-// it came from. Values are approximate, as reported in late 2025.
+// Demo data: the AI "vendor financing" cluster (after Bloomberg's chart), more circular
+// deals of the same kind, and three companies from the first live-lookup test. Every
+// relationship carries the article it came from. Values are approximate, as reported in
+// late 2025.
 // Direction follows the money: investor -> investee, buyer -> seller, acquirer -> acquired.
 
 export const SEED_COMPANIES = [
@@ -37,6 +38,12 @@ export const SEED_COMPANIES = [
   { key: "clay", name: "Clay", kind: "private", sector: "GTM data", value_usd: 3.1e9 },
   { key: "capitalg", name: "CapitalG", kind: "investor", sector: "Venture capital" },
   { key: "sequoiacapital", name: "Sequoia Capital", kind: "investor", sector: "Venture capital" },
+  // More circular deals
+  { key: "google", name: "Google", kind: "public", sector: "Search / Cloud", value_usd: 3.4e12 },
+  { key: "amazon", name: "Amazon", kind: "public", sector: "Cloud / E-commerce", value_usd: 2.4e12 },
+  { key: "crusoe", name: "Crusoe", kind: "private", sector: "AI data centers", value_usd: 1e10 },
+  { key: "lambda", name: "Lambda", kind: "private", sector: "GPU cloud", value_usd: 5.9e9 },
+  { key: "g42", name: "G42", kind: "private", sector: "AI / Cloud" },
 ];
 
 const S = {
@@ -62,6 +69,18 @@ const S = {
   wix: "https://finviz.com/news/84002/wix-acquires-base44-to-boost-ai-driven-intent-based-software-development",
   ramp: "https://www.nbcsandiego.com/news/business/money-report/fintech-ramps-valuation-hits-16-billion-in-deal-led-by-peter-thiels-founders-fund/3850034",
   clay: "https://www.businesswire.com/news/home/20250805719448/en/AI-GTM-Leader-Clay-Raises-%2524100M-Series-C-to-Fuel-GTM-Engineering-Roles-Industrywide",
+  amzAnthropic: "https://www.anthropic.com/news/anthropic-amazon-trainium",
+  amzCompute: "https://www.anthropic.com/news/anthropic-amazon-compute",
+  googAnthropic: "https://www.businesstoday.in/amp/tech-today/news/story/google-to-invest-10-billion-in-anthropic-may-add-30-billion-more-527408-2026-04-24",
+  googTpu: "https://www.anthropic.com/news/expanding-our-use-of-google-cloud-tpus-and-services",
+  amzOpenai: "https://www.upi.com/Top_News/US/2026/02/27/openai-funding-round-amazon-nvidia-softbank/5241772238479/",
+  lambda: "https://whbl.com/2025/02/19/ai-cloud-startup-lambda-raises-480-million-in-new-round-nvidia-among-investors/",
+  lambdaLease: "https://rcrwireless.com/20250908/ai-infrastructure/nvidia-lambda",
+  nebiusNv: "https://thenextweb.com/news/nvidia-invests-2-billion-in-nebius",
+  crusoe: "https://www.crusoe.ai/resources/newsroom/crusoe-announces-series-e-funding",
+  crusoeGpu: "https://www.sdxcentral.com/news/crusoe-secures-225m-to-grow-ai-cloud-platform/",
+  mistralGpu: "https://finance.yahoo.com/sectors/technology/articles/frances-mistral-raises-830-million-060341046.html",
+  g42: "https://rcpmag.com/articles/2024/04/26/microsoft-cloud-ai-investment-g42.aspx",
 };
 
 // [source, type, target, amount_usd, label, date, source_url]
@@ -116,6 +135,23 @@ const E = [
   ["openai", "software", "clay", null, "OpenAI is a Clay customer", "2025-08-05", S.clay],
   ["anthropic", "software", "clay", null, "Anthropic is a Clay customer", "2025-08-05", S.clay],
   ["anysphere", "software", "clay", null, "Cursor is a Clay customer", "2025-08-05", S.clay],
+  // More circular deals: the investor's money comes back as the investee's purchases
+  ["amazon", "investment", "anthropic", 8e9, "Amazon has invested $8B in Anthropic", "2024-11-22", S.amzAnthropic],
+  ["anthropic", "cloud", "amazon", 1e11, "Anthropic commits $100B+ to AWS over 10 years", "2026-04-20", S.amzCompute],
+  ["google", "investment", "anthropic", 1e10, "Google invests $10B (up to $40B) in Anthropic", "2026-04-24", S.googAnthropic],
+  ["anthropic", "cloud", "google", null, "Anthropic expands to up to 1M Google TPUs", "2025-10-23", S.googTpu],
+  ["amazon", "investment", "openai", 5e10, "Amazon invests $50B in OpenAI", "2026-02-27", S.amzOpenai],
+  ["openai", "cloud", "amazon", 1e11, "OpenAI expands its AWS deal by $100B", "2026-02-27", S.amzOpenai],
+  ["nvidia", "investment", "lambda", null, "Nvidia joins Lambda's $480M Series D", "2025-02-19", S.lambda],
+  ["lambda", "hardware", "nvidia", null, "Lambda buys Nvidia GPUs with the new funding", "2025-02-19", S.lambda],
+  ["nvidia", "cloud", "lambda", 1.5e9, "Nvidia leases back GPU servers from Lambda for $1.5B", "2025-09-08", S.lambdaLease],
+  ["nvidia", "investment", "nebius", 2e9, "Nvidia invests $2B in Nebius", "2026-03-12", S.nebiusNv],
+  ["nebius", "hardware", "nvidia", 2.1e9, "Nebius spends $2.1B on Nvidia GPUs", "2026-03-12", S.nebiusNv],
+  ["nvidia", "investment", "crusoe", null, "Nvidia joins Crusoe's $1.375B Series E", "2025-10-24", S.crusoe],
+  ["crusoe", "hardware", "nvidia", 2.25e8, "Crusoe borrows $225M to buy Nvidia GPUs", "2025-03-28", S.crusoeGpu],
+  ["mistralai", "hardware", "nvidia", 8.3e8, "Mistral raises $830M of debt to buy 13,800 Nvidia chips", "2026-03-30", S.mistralGpu],
+  ["microsoft", "investment", "g42", 1.5e9, "Microsoft invests $1.5B in G42", "2024-04-15", S.g42],
+  ["g42", "cloud", "microsoft", null, "G42 moves its data platform and infrastructure to Azure", "2024-04-15", S.g42],
 ];
 
 export const SEED_RELATIONSHIPS = E.map(([source, type, target, amount_usd, label, date, source_url]) => ({

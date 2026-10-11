@@ -15,7 +15,7 @@ export default function Details({ node, edge, ...props }) {
   return <NodeDetails key={node.key} node={node} {...props} />;
 }
 
-function NodeDetails({ node, byKey, edges, holdings, onSelect, onFocus, onLookup, onAddHolding, lookupBusy, fold, onToggleFold }) {
+function NodeDetails({ node, byKey, edges, holdings, onSelect, onFocus, onLookup, onAddHolding, lookupBusy, more, onShowMore, onShowFewer }) {
   const byAmount = (a, b) => (b.amount_usd || 0) - (a.amount_usd || 0);
   const out = edges.filter((e) => e.source === node.key).sort(byAmount);
   const inc = edges.filter((e) => e.target === node.key).sort(byAmount);
@@ -48,10 +48,14 @@ function NodeDetails({ node, byKey, edges, holdings, onSelect, onFocus, onLookup
           <Button size="sm" onClick={() => onFocus(node.key)}>
             <LocateFixed className="h-3.5 w-3.5" /> Center
           </Button>
-          {fold && (
-            <Button size="sm" onClick={() => onToggleFold(node.key)}>
-              {fold.open ? <FoldVertical className="h-3.5 w-3.5" /> : <UnfoldVertical className="h-3.5 w-3.5" />}
-              {fold.open ? `Fold ${fold.count}` : `Show ${fold.count} more`}
+          {more?.count > 0 && (
+            <Button size="sm" onClick={() => onShowMore(node.key)}>
+              <UnfoldVertical className="h-3.5 w-3.5" /> Show more
+            </Button>
+          )}
+          {more?.extra > 0 && (
+            <Button size="sm" onClick={() => onShowFewer(node.key)}>
+              <FoldVertical className="h-3.5 w-3.5" /> Show fewer
             </Button>
           )}
         </div>

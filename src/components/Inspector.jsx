@@ -7,7 +7,7 @@ export const SHEET_PEEK = 124;
 const TOP_GAP = 76; // keeps the command bar visible above a fully raised sheet
 
 /**
- * The one container for Details / What if / Risks / Portfolio. On wide screens it is a
+ * The one container for Details / Loops / What if / Risks / Portfolio. On wide screens it is a
  * floating card that hugs its content and collapses to just the tabs; on phones it is a
  * bottom sheet with peek / half / full detents.
  */
@@ -21,7 +21,7 @@ export default function Inspector({ compact, tabs, tab, onTabChange, open, onOpe
     );
   }
   return (
-    <aside className="glass absolute right-3 top-3 z-10 flex max-h-[calc(100%-84px)] w-[320px] flex-col overflow-hidden rounded-2xl xl:w-[360px]">
+    <aside className="glass absolute right-3 top-3 z-10 flex max-h-[calc(100%-84px)] w-[368px] flex-col overflow-hidden rounded-2xl xl:w-[380px]">
       <div className="flex shrink-0 items-center gap-1.5 p-2">
         {tabControl}
         <button

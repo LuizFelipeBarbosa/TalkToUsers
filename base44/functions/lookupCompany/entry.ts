@@ -469,7 +469,8 @@ Deno.serve(async (req) => {
 
     // Cache: a recent live lookup is reused unless the analyst forces a refresh.
     const existing = (await db.Company.filter({ key }))[0];
-    if (!force && existing?.last_fetched && Date.now() - Date.parse(existing.last_fetched) < CACHE_HOURS * 3600e3) {
+    // A pre-filled company never expires: it was mapped thoroughly on purpose.
+    if (!force && existing?.last_fetched && (existing.prefilled || Date.now() - Date.parse(existing.last_fetched) < CACHE_HOURS * 3600e3)) {
       log.push("cache hit");
       return Response.json({ key, cached: true, log, ms: Date.now() - started });
     }
@@ -679,7 +680,7 @@ Deno.serve(async (req) => {
         ...(c.kind ? { kind: c.kind } : {}),
         ...(c.sector ? { sector: c.sector } : {}),
         ...value,
-        ...(k === key ? { last_fetched: new Date().toISOString(), ...(c.description ? { description: c.description } : {}) } : {}),
+        ...(k === key ? { last_fetched: new Date().toISOString(), ...(deep ? { prefilled: true } : {}), ...(c.description ? { description: c.description } : {}) } : {}),
       };
       if (found) {
         // Fix a name that was saved under an alias on an earlier lookup.

@@ -240,8 +240,8 @@ export default function App() {
           ) : lookup.done ? (
             <span>
               Mapped <b>{byKey[lookup.result?.key]?.name || lookup.name}</b>: {lookup.count} relationships
-              {lookup.result?.cached ? " (from earlier lookup)" : lookup.result?.added != null ? `, ${lookup.result.added} new from the web` : ""}
-              {lookup.result?.ms ? ` in ${(lookup.result.ms / 1000).toFixed(0)}s` : ""}.
+              {!lookup.result?.cached && lookup.result?.added != null ? `, ${lookup.result.added} new from the web` : ""}
+              {!lookup.result?.cached && lookup.result?.ms ? ` in ${(lookup.result.ms / 1000).toFixed(0)}s` : ""}.
             </span>
           ) : (
             <span>

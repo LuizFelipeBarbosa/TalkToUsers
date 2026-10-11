@@ -13,7 +13,7 @@ const TYPES = ["owner", "investment", "venture", "hardware", "cloud", "software"
 // No money changes hands, so the direction carries no meaning: stored with the looked-up company as source.
 const UNDIRECTED = new Set(["partnership", "competitor"]);
 const CACHE_HOURS = 72;
-const MAX_ARTICLES = 8;
+const MAX_ARTICLES_FAST = 8;
 const ARTICLE_CHARS = 10000;
 // Passages worth keeping when an article is longer than ARTICLE_CHARS: investor lists
 // and supplier/customer deals often sit deep in a page (e.g. Wikipedia, long news features).
@@ -103,7 +103,10 @@ function relevantText(text: string, max = ARTICLE_CHARS) {
 
 type Doc = { id: number; url: string; title: string; text: string };
 
-async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
+// `deep` is for pre-filling the cache, where nobody is waiting: read twice as many
+// articles and wait for slow searches and pages instead of skipping them.
+async function searchAndRead(name: string, log: string[], deep = false): Promise<Doc[]> {
+  const MAX_ARTICLES = deep ? 16 : MAX_ARTICLES_FAST;
   const apiKey = secret("BRIGHTDATA_API_KEY")!;
   const serpZone = secret("BRIGHTDATA_SERP_ZONE") || "serp_api1";
   const unlockerZone = secret("BRIGHTDATA_UNLOCKER_ZONE") || "web_unlocker1";
@@ -124,8 +127,8 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
   // Google via Bright Data sometimes hangs on one query: once all but one are back, wait
   // at most 2 s for the last one, and never more than 14 s in all.
   const serps = await settleFast(
-    queries.map((q) => brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, 14000)),
-    { enough: queries.length - 1, graceMs: 2000, hardMs: 14000, label: "slow search skipped" },
+    queries.map((q) => brightDataRetry(apiKey, serpZone, `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us&num=10&brd_json=1`, {}, deep ? 30000 : 14000)),
+    deep ? { enough: queries.length, graceMs: 0, hardMs: 30000, label: "slow search skipped" } : { enough: queries.length - 1, graceMs: 2000, hardMs: 14000, label: "slow search skipped" },
   );
   const docs: Doc[] = [];
   const seen = new Set<string>();
@@ -175,8 +178,8 @@ async function searchAndRead(name: string, log: string[]): Promise<Doc[]> {
   const toRead = docs.slice(0, MAX_ARTICLES + 2);
   // Once most pages are in, a slow site isn't worth holding the whole lookup for.
   const pages = await settleFast(
-    toRead.map((d) => brightData(apiKey, unlockerZone, d.url, { data_format: "markdown" }, 12000)),
-    { enough: MAX_ARTICLES - 2, graceMs: 2000, hardMs: 12000, label: "slow page skipped" },
+    toRead.map((d) => brightData(apiKey, unlockerZone, d.url, { data_format: "markdown" }, deep ? 25000 : 12000)),
+    deep ? { enough: toRead.length, graceMs: 0, hardMs: 25000, label: "slow page skipped" } : { enough: MAX_ARTICLES - 2, graceMs: 2000, hardMs: 12000, label: "slow page skipped" },
   );
   pages.forEach((p, i) => {
     if (p.status === "fulfilled") toRead[i].text = relevantText(p.value);
@@ -443,7 +446,7 @@ Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
     const db = base44.asServiceRole.entities;
-    const { name: rawName, force = false, action, keys: only } = await req.json();
+    const { name: rawName, force = false, deep = false, action, keys: only } = await req.json();
 
     // Background value fill, called by the app right after a map is shown: quotes for public
     // companies, then a Bright Data search for the rest. A figure is only ever replaced by a
@@ -474,7 +477,7 @@ Deno.serve(async (req) => {
     const useBrightData = !!secret("BRIGHTDATA_API_KEY");
     let docs: Doc[] | null = null;
     if (useBrightData) {
-      docs = await searchAndRead(name, log);
+      docs = await searchAndRead(name, log, deep);
     } else {
       log.push("BRIGHTDATA_API_KEY not set: using the LLM's own web search");
     }
@@ -482,6 +485,9 @@ Deno.serve(async (req) => {
     const t2 = Date.now();
     const result: any = await base44.asServiceRole.integrations.Core.InvokeLLM({
       prompt: extractionPrompt(name, docs),
+      // A stronger model finds more relationships in long articles but takes longer, so
+      // only the cache pre-fill uses it; live searches keep the app's default.
+      ...(deep ? { model: "claude-sonnet-5" } : {}),
       response_json_schema: EXTRACT_SCHEMA,
       ...(docs ? {} : { add_context_from_internet: true }),
     });

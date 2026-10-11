@@ -33,6 +33,23 @@ export default function App() {
   const [scenario, setScenario] = useState(null);
   const [eventText, setEventText] = useState(EXAMPLES[0]);
   const [highlight, setHighlight] = useState(null); // {edges:Set, nodes:Set, title}
+  // Companies looked up in this browser: their links stay on the faded background map.
+  const [mine, setMine] = useState(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("ripple.searched") || "[]"));
+    } catch {
+      return new Set();
+    }
+  });
+  const remember = (key) =>
+    setMine((m) => {
+      if (m.has(key)) return m;
+      const next = new Set([...m, key]);
+      try {
+        localStorage.setItem("ripple.searched", JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
 
   // Reloads can overlap (a lookup and the background value search both reload): only the
   // most recently started one may replace the data, so an older, slower read never wipes
@@ -81,14 +98,14 @@ export default function App() {
 
   // What is drawn: the focus company's 2-hop neighbourhood (plus anything a scenario
   // touched), or the whole map when "Show whole map" is on.
-  // Links found only by the cache pre-fill are left off the map unless they touch a company
-  // someone searched (or the one in focus), so the pre-fill doesn't clutter the background.
-  const shown = (e) => !e.prefilled || byKey[e.source]?.searched || byKey[e.target]?.searched;
+  // Links found only by the cache pre-fill are left off the map unless they touch the company
+  // in focus or one searched in this browser, so the pre-fill doesn't clutter the background.
+  const shown = (e) => !e.prefilled || mine.has(e.source) || mine.has(e.target);
   const visible = useMemo(() => {
     if (showAll || !focus || !byKey[focus]) {
       const bgEdges = edges.filter(shown);
       const used = new Set(bgEdges.flatMap((e) => [e.source, e.target]));
-      return { nodes: companies.filter((c) => used.has(c.key) || c.origin === "seed" || c.searched), edges: bgEdges };
+      return { nodes: companies.filter((c) => used.has(c.key) || c.origin === "seed" || mine.has(c.key)), edges: bgEdges };
     }
     const keep = new Set([focus, ...Object.keys(scenario?.impacts || {}), ...Object.keys(highlight?.impacts || {})]);
     let frontier = [focus];
@@ -110,7 +127,7 @@ export default function App() {
       nodes: companies.filter((c) => keep.has(c.key)),
       edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target) && (e.source === focus || e.target === focus || shown(e))),
     };
-  }, [showAll, companies, edges, focus, byKey, scenario, highlight]);
+  }, [showAll, companies, edges, focus, byKey, scenario, highlight, mine]);
 
   const runLookup = async (name, opts) => {
     if (!name.trim()) return;
@@ -123,6 +140,7 @@ export default function App() {
       const key = res?.key || companyKey(name);
       const n = d.relationships.filter((r) => r.source === key || r.target === key).length;
       setLookup({ name, done: true, result: res, count: n });
+      remember(key);
       setFocus(key);
       setSelected({ kind: "node", key });
       setTab("details");

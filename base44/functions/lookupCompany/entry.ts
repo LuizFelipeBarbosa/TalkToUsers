@@ -721,12 +721,13 @@ Deno.serve(async (req) => {
     const fresh = new Set(edges.map((e) => e.key));
     const stale = touching.filter((r: any) => r.origin !== "seed" && !fresh.has(r.key) && (pairs.has(`${r.source}|${r.target}`) || (UNDIRECTED.has(r.type) && pairs.has(`${r.target}|${r.source}`))));
     edgeDeletes.push(...stale.map((r: any) => r.id));
-    // The pre-fill also flags older unflagged links of this company: any that came from
-    // someone's search touch a company marked searched, so they stay on the map anyway.
+    // The pre-fill also flags older unflagged links of this company, except links of a
+    // company someone searched: those came from their search and stay on the map.
     if (deep) {
       const handled = new Set([...edgeDeletes, ...edgeUpdates.map(([id]) => id)]);
+      const searched = (k: string) => !!companyByKey.get(k)?.searched;
       for (const r of touching) {
-        if (r.origin !== "seed" && r.prefilled == null && !handled.has(r.id) && !fresh.has(r.key)) edgeUpdates.push([r.id, { prefilled: true }]);
+        if (r.origin !== "seed" && r.prefilled == null && !handled.has(r.id) && !fresh.has(r.key) && !searched(r.source) && !searched(r.target)) edgeUpdates.push([r.id, { prefilled: true }]);
       }
     }
 

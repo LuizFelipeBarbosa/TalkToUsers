@@ -1,47 +1,10 @@
 import { useState } from "react";
 import { ChevronRight, Info, Loader2, Zap } from "lucide-react";
 import { fmtUsd, impactPath } from "@/lib/graph";
-import { Button } from "@/components/ui/button";
 import { Row, Section } from "@/components/ui/list";
 import { EmptyState, ImpactBar, ImpactValue, shortName } from "./common";
 
-export default function WhatIf({ eventText, setEventText, ...props }) {
-  return (
-    <div className="space-y-5">
-      <EventInput value={eventText} onChange={setEventText} running={props.scenario?.running} onRun={props.onRun} />
-      <Body {...props} />
-    </div>
-  );
-}
-
-// Describe any event; Enter (without Shift) or the button runs it.
-function EventInput({ value, onChange, running, onRun }) {
-  const run = () => value.trim() && onRun(value.trim());
-  return (
-    <div className="overflow-hidden rounded-xl bg-fill/[0.08]">
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            run();
-          }
-        }}
-        rows={3}
-        placeholder="What if… describe an event, in any language"
-        className="block w-full resize-none bg-transparent px-3 pt-2.5 text-[13.5px] leading-snug outline-none placeholder:text-label-3"
-      />
-      <div className="flex justify-end px-2 pb-2">
-        <Button size="sm" variant="filled" className="bg-risk hover:bg-risk/90" disabled={running || !value.trim()} onClick={run}>
-          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />} Run scenario
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function Body({ scenario, examples, byKey, holdingsCount, onRun, applyShocks, pathEdges, onSelect }) {
+export default function WhatIf({ scenario, examples, byKey, holdingsCount, onRun, applyShocks, pathEdges, onSelect }) {
   if (scenario?.running) {
     return (
       <div className="flex items-center justify-center gap-2 py-8 text-[13px] text-label-2">
@@ -55,7 +18,7 @@ function Body({ scenario, examples, byKey, holdingsCount, onRun, applyShocks, pa
         {scenario?.error ? (
           <p className="rounded-xl bg-risk/10 p-3 text-[13px] leading-snug text-risk">{scenario.error}</p>
         ) : (
-          <p className="px-1 text-[13px] leading-snug text-label-2">Describe an event above, or try one of these. The shock travels through every relationship to your portfolio.</p>
+          <p className="px-1 text-[13px] leading-snug text-label-2">Describe an event in the search bar, or try one of these. The shock travels through every relationship to your portfolio.</p>
         )}
         <Section title="Examples">
           {examples.map((ex) => (

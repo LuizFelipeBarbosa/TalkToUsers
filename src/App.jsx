@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, Loader2, Zap, Network, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import GraphView from "@/components/GraphView";
+import CommandBar from "@/components/CommandBar";
+import MapKey, { useMapKeyOpen } from "@/components/MapKey";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import Details from "@/components/panels/Details";
 import WhatIf from "@/components/panels/WhatIf";
@@ -8,7 +10,7 @@ import Risks from "@/components/panels/Risks";
 import Portfolio from "@/components/panels/Portfolio";
 import { api, OFFLINE, companyKey } from "@/api/backend";
 import { canonicalGraph } from "../base44/shared/seed.js";
-import { EDGE_TYPES, propagate, impactPath, findCircularFinancing, findSharedDependencies } from "@/lib/graph";
+import { propagate, impactPath, findCircularFinancing, findSharedDependencies } from "@/lib/graph";
 
 const EXAMPLES = [
   "OpenAI fails to raise its next round and halves its compute commitments",
@@ -30,7 +32,10 @@ export default function App() {
   const [showLabels, setShowLabels] = useState(true);
   const [allLinks, setAllLinks] = useState(false);
   const [tab, setTab] = useState("details");
-  const [query, setQuery] = useState("");
+  const [minDeal, setMinDeal] = useState(0); // hide deals below this size (USD)
+  const [minValue, setMinValue] = useState(0); // hide companies valued below this (USD)
+  const [keyOpen, setKeyOpen] = useMapKeyOpen();
+  const searchRef = useRef(null);
   const [lookup, setLookup] = useState(null); // {name, step, error, result}
   const [scenario, setScenario] = useState(null);
   const [eventText, setEventText] = useState(EXAMPLES[0]);
@@ -120,7 +125,7 @@ export default function App() {
   // in focus or one searched in this browser, so the pre-fill doesn't clutter the background.
   // After "Clear searches" only the seed links and later searches stay in the background.
   const shown = (e) => mine.has(e.source) || mine.has(e.target) || (cleared ? e.origin === "seed" : !e.prefilled);
-  const visible = useMemo(() => {
+  const drawn = useMemo(() => {
     if (showAll || !focus || !byKey[focus]) {
       const bgEdges = edges.filter(shown);
       const used = new Set(bgEdges.flatMap((e) => [e.source, e.target]));
@@ -150,6 +155,25 @@ export default function App() {
     };
   }, [showAll, allLinks, companies, edges, focus, byKey, scenario, highlight, mine, cleared, holdingKeys]);
   useEffect(() => setAllLinks(false), [focus, scenario?.impacts, highlight]);
+
+  // The key's deal and company filters only change the view: Risks and What if still use every
+  // edge. They never hide the focus company, holdings, the "+N" circles, or what a scenario or
+  // highlight points at.
+  const visible = useMemo(() => {
+    if (!minDeal && !minValue) return drawn;
+    const pinned = new Set([focus, ...holdingKeys, ...Object.keys(scenario?.impacts || {}), ...Object.keys(highlight?.impacts || {})]);
+    const pinnedEdges = new Set([...(scenario?.edgesHit || []), ...(highlight?.edges || [])]);
+    const keepNode = (n) => n.group || pinned.has(n.key) || (n.value_usd || 0) >= minValue;
+    let nodes = drawn.nodes.filter(keepNode);
+    const shownKeys = new Set(nodes.map((n) => n.key));
+    const out = drawn.edges.filter(
+      (e) => shownKeys.has(e.source) && shownKeys.has(e.target) && (pinnedEdges.has(e.key) || e.key.startsWith(MORE_PREFIX) || (e.amount_usd || 0) >= minDeal)
+    );
+    // Companies the filters left without a line would float alone.
+    const linked = new Set(out.flatMap((e) => [e.source, e.target]));
+    nodes = nodes.filter((n) => linked.has(n.key) || pinned.has(n.key));
+    return { nodes, edges: out };
+  }, [drawn, minDeal, minValue, focus, holdingKeys, scenario, highlight]);
 
   // Scenario / highlight view: only the companies the shock reaches (the most affected,
   // plus the chain that connects each back to the origin) and the lines it travels along.
@@ -226,6 +250,30 @@ export default function App() {
     }
     return { nodes, edges: out };
   }
+
+  const clearScenario = () => {
+    setScenario(null);
+    setHighlight(null);
+  };
+  const focusCompany = (key) => {
+    clearScenario();
+    setFocus(key);
+    setSelected({ kind: "node", key });
+    setTab("details");
+  };
+
+  // ⌘K or / focuses the search.
+  useEffect(() => {
+    const onKey = (e) => {
+      const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
+      if (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") || (!typing && e.key === "/")) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const runLookup = async (name, opts) => {
     if (!name.trim()) return;
@@ -308,6 +356,9 @@ export default function App() {
   const graphImpacts = highlight ? highlight.impacts : scenario?.impacts;
   const graphEdgesHit = highlight ? highlight.edges : scenario?.edgesHit;
 
+  const chip = highlight ? highlight.title : scenario?.impacts ? scenario.headline || scenario.event : null;
+  const dismissLookup = useCallback(() => setLookup(null), []);
+
   const selNode = selected?.kind === "node" ? byKey[selected.key] : null;
   const selEdge = selected?.kind === "edge" ? edgeByKey[selected.key] : null;
 
@@ -320,73 +371,7 @@ export default function App() {
   ];
 
   return (
-    <div className="h-screen flex flex-col bg-slate-50 text-slate-900">
-      {/* Header */}
-      <header className="flex items-center gap-4 px-5 py-3 bg-white border-b border-slate-200">
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-rose-500 to-indigo-600 grid place-items-center text-white font-black">R</div>
-          <div>
-            <div className="font-bold leading-tight">Ripple</div>
-            <div className="text-[11px] text-slate-500 leading-tight">Who's connected to whom, and what breaks if one of them does</div>
-          </div>
-        </div>
-        <form
-          className="flex-1 max-w-xl flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            runLookup(query);
-          }}
-        >
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              list="company-names"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Type any company, e.g. Base44, Ramp, Stripe…"
-              className="w-full h-10 pl-9 pr-3 rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-            <datalist id="company-names">
-              {companies.map((c) => (
-                <option key={c.key} value={c.name} />
-              ))}
-            </datalist>
-          </div>
-          <button disabled={!!lookup && !lookup.done && !lookup.error} className="h-10 px-4 rounded-lg bg-slate-900 text-white font-medium disabled:opacity-50 flex items-center gap-2">
-            {lookup && !lookup.done && !lookup.error ? <Loader2 className="w-4 h-4 animate-spin" /> : <Network className="w-4 h-4" />}
-            Map it
-          </button>
-        </form>
-        <div className="ml-auto flex items-center gap-3 text-xs text-slate-500">
-          {OFFLINE && <span className="px-2 py-1 rounded bg-amber-100 text-amber-800 font-medium">Offline demo data</span>}
-          <span>
-            {companies.length} companies · {edges.length} relationships
-          </span>
-        </div>
-      </header>
-
-      {lookup && (
-        <div className={`px-5 py-2 text-sm border-b flex items-center gap-2 ${lookup.error ? "bg-rose-50 border-rose-200 text-rose-800" : lookup.done ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-indigo-50 border-indigo-200 text-indigo-800"}`}>
-          {!lookup.done && !lookup.error && <Loader2 className="w-4 h-4 animate-spin" />}
-          {lookup.error ? (
-            <span>Couldn't map {lookup.name}: {lookup.error}</span>
-          ) : lookup.done ? (
-            <span>
-              Mapped <b>{byKey[lookup.result?.key]?.name || lookup.name}</b>: {lookup.count} relationships
-              {!lookup.result?.cached && lookup.result?.added != null ? `, ${lookup.result.added} new from the web` : ""}
-              {!lookup.result?.cached && lookup.result?.ms ? ` in ${(lookup.result.ms / 1000).toFixed(0)}s` : ""}.
-            </span>
-          ) : (
-            <span>
-              Mapping <b>{lookup.name}</b>: {lookup.step}…
-            </span>
-          )}
-          <button className="ml-auto opacity-60 hover:opacity-100" onClick={() => setLookup(null)}>
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
+    <div className="h-screen flex flex-col bg-canvas text-label">
       <div className="flex-1 flex min-h-0">
         {/* Graph */}
         <div className="flex-1 relative min-w-0 bg-[radial-gradient(circle_at_center,#ffffff,#f1f3f5)]">
@@ -409,24 +394,36 @@ export default function App() {
               impacts={graphImpacts}
               edgesHit={graphEdgesHit}
               showLabels={showLabels}
+              insets={{ top: chip ? 112 : 70, bottom: keyOpen ? 230 : 50 }}
             />
           )}
-          {(scenario?.impacts || highlight) && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-white/95 border border-rose-200 shadow-sm rounded-full pl-4 pr-2 py-1.5 text-sm flex items-center gap-2">
-              <Zap className="w-4 h-4 text-rose-600" />
-              <span className="font-medium max-w-[460px] truncate">{highlight ? highlight.title : scenario.headline || scenario.event}</span>
-              <button
-                className="rounded-full hover:bg-slate-100 p-1"
-                onClick={() => {
-                  setScenario(null);
-                  setHighlight(null);
-                }}
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
-          <Legend />
+          <CommandBar
+            ref={searchRef}
+            className="absolute left-1/2 top-3 z-20 w-[min(520px,calc(100%-300px))] -translate-x-1/2"
+            companies={companies}
+            examples={EXAMPLES}
+            lookup={lookup}
+            onDismissLookup={dismissLookup}
+            scenarioBusy={!!scenario?.running}
+            chip={chip}
+            onClearChip={clearScenario}
+            onPickCompany={focusCompany}
+            onLookup={(name) => runLookup(name)}
+            onRunScenario={(text) => {
+              setEventText(text);
+              runScenario(text);
+            }}
+          />
+          <MapKey
+            style={{ left: 12, bottom: 12 }}
+            open={keyOpen}
+            onOpenChange={setKeyOpen}
+            minDeal={minDeal}
+            onMinDeal={setMinDeal}
+            minValue={minValue}
+            onMinValue={setMinValue}
+            stats={`${companies.length} companies · ${edges.length} relationships${OFFLINE ? " · offline demo data" : ""}`}
+          />
           <div className="absolute top-3 left-3 flex flex-col gap-1.5 text-xs">
             <label className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-1 border border-slate-200">
               <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show whole map
@@ -473,8 +470,6 @@ export default function App() {
             )}
             {tab === "whatif" && (
               <WhatIf
-                eventText={eventText}
-                setEventText={setEventText}
                 scenario={scenario}
                 examples={EXAMPLES}
                 byKey={byKey}
@@ -536,26 +531,6 @@ export default function App() {
             )}
           </div>
         </aside>
-      </div>
-    </div>
-  );
-}
-
-function Legend() {
-  return (
-    <div className="absolute bottom-3 left-3 bg-white/95 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-600 shadow-sm max-w-[520px]">
-      <div className="flex flex-wrap gap-x-3 gap-y-1">
-        {Object.entries(EDGE_TYPES).map(([k, t]) => (
-          <span key={k} className="flex items-center gap-1">
-            <svg width="18" height="6">
-              <line x1="0" y1="3" x2="18" y2="3" stroke={t.color} strokeWidth="2.5" strokeDasharray={t.dashed ? "4 3" : undefined} />
-            </svg>
-            {t.label}
-          </span>
-        ))}
-      </div>
-      <div className="mt-1 text-slate-500">
-        Circle size = market value · Line thickness = deal size · Arrows follow the money · <span className="text-amber-600">★ your portfolio</span>
       </div>
     </div>
   );

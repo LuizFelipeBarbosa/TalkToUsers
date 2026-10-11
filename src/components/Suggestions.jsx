@@ -11,7 +11,9 @@ export function matchCompanies(companies, query, limit = 6) {
     if (n.startsWith(q)) starts.push(c);
     else if (n.includes(q)) contains.push(c);
   }
-  return [...starts, ...contains].slice(0, limit);
+  // Within each group, the biggest company first ("Nvidia" before "NVIDIA Ventures").
+  const byValue = (a, b) => (b.value_usd || 0) - (a.value_usd || 0);
+  return [...starts.sort(byValue), ...contains.sort(byValue)].slice(0, limit);
 }
 
 // Arrow-key navigation over a suggestion list. Returns the active index and a keydown

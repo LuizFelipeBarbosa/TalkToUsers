@@ -38,7 +38,7 @@ function arcPath(s, t, rS, rT, bend = 0.18) {
   return { d: `M${sx},${sy} Q${cx},${cy} ${tx},${ty}`, mx, my };
 }
 
-export default function GraphView({ nodes, edges, holdings, focus, selected, onSelect, impacts, edgesHit, showLabels }) {
+export default function GraphView({ nodes, edges, holdings, focus, selected, onSelect, impacts, edgesHit, showLabels, insets = { top: 0, bottom: 70 } }) {
   const svgRef = useRef(null);
   const gRef = useRef(null);
   const simRef = useRef(null);
@@ -148,8 +148,10 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
     const xs = simNodes.flatMap((n) => [n.x - n.r - 40, n.x + n.r + 40]);
     const ys = simNodes.flatMap((n) => [n.y - n.r - 20, n.y + n.r + 30]);
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-    const k = Math.min(1.6, 0.94 / Math.max((x1 - x0) / size.w, (y1 - y0) / (size.h - 70)));
-    const tr = zoomIdentity.translate(size.w / 2 - (k * (x0 + x1)) / 2, (size.h - 70) / 2 - (k * (y0 + y1)) / 2).scale(k);
+    // Keep clear of the search bar above and the key below.
+    const h = Math.max(120, size.h - insets.top - insets.bottom);
+    const k = Math.min(1.6, 0.94 / Math.max((x1 - x0) / size.w, (y1 - y0) / h));
+    const tr = zoomIdentity.translate(size.w / 2 - (k * (x0 + x1)) / 2, insets.top + h / 2 - (k * (y0 + y1)) / 2).scale(k);
     select(svgRef.current).call(zoomRef.current.transform, tr);
   };
 

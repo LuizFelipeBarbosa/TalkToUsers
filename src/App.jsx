@@ -166,7 +166,16 @@ export default function App() {
       for (let cur = k; cur && !keep.has(cur); cur = imp[cur]?.via) keep.add(cur);
     }
     const nodes = companies.filter((c) => keep.has(c.key));
-    const out = edges.filter((e) => hit.has(e.key) && keep.has(e.source) && keep.has(e.target));
+    // Every relationship between the companies shown, one line per pair, preferring the line
+    // the shock travelled along, so directly-hit companies stay connected to each other.
+    const pairs = {};
+    const rank = (e) => (hit.has(e.key) ? 2e15 : 0) + (e.type === "competitor" ? 0 : 1e15) + (e.amount_usd || 0);
+    for (const e of edges) {
+      if (!keep.has(e.source) || !keep.has(e.target)) continue;
+      const pk = [e.source, e.target].sort().join("|");
+      if (!pairs[pk] || rank(e) > rank(pairs[pk])) pairs[pk] = e;
+    }
+    const out = Object.values(pairs);
     const rest = ranked.length - keep.size;
     const origin = ranked.find(([, v]) => v.origin)?.[0];
     if (rest > 0 && origin) {

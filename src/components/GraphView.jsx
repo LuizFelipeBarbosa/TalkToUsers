@@ -266,7 +266,8 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
           const hit = impactMode && edgesHit?.has(e.key) && reached(e.source) && reached(e.target);
           const isSel = selected?.kind === "edge" && selected.key === e.key;
           const inFocus = !focusSet || (focusSet.has(e.source) && focusSet.has(e.target) && (e.source === focus || e.target === focus));
-          const dim = !grouped && ((impactMode && !hit) || (!impactMode && focusSet && !inFocus));
+          const linksAffected = impacts?.[e.source] && impacts?.[e.target];
+          const dim = !grouped && ((impactMode && !hit && !linksAffected) || (!impactMode && focusSet && !inFocus));
           const w = edgeWidth(e);
           const showLabel = (showLabels && !dim && callouts.has(e.key)) || hoverEdge === e.key || isSel || (hit && e.amount_usd >= 5e9);
           return (

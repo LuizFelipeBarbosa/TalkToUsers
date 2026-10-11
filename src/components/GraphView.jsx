@@ -268,19 +268,21 @@ export default function GraphView({ nodes, edges, holdings, focus, selected, onS
           const inFocus = !focusSet || (focusSet.has(e.source) && focusSet.has(e.target) && (e.source === focus || e.target === focus));
           const linksAffected = impacts?.[e.source] && impacts?.[e.target];
           const dim = !grouped && ((impactMode && !hit && !linksAffected) || (!impactMode && focusSet && !inFocus));
+          // In a scenario, other links between affected companies stay as faint context so the shock path stands out.
+          const faint = impactMode && !hit && !grouped && linksAffected && !isSel && hoverEdge !== e.key;
           const w = edgeWidth(e);
-          const showLabel = (showLabels && !dim && callouts.has(e.key)) || hoverEdge === e.key || isSel || (hit && e.amount_usd >= 5e9);
+          const showLabel = (showLabels && !dim && !faint && callouts.has(e.key)) || hoverEdge === e.key || isSel || (hit && e.amount_usd >= 5e9);
           return (
-            <g key={e.key} opacity={dim ? 0.12 : 1} className="cursor-pointer fade" onMouseEnter={() => setHoverEdge(e.key)} onMouseLeave={() => setHoverEdge(null)} onClick={(ev) => { ev.stopPropagation(); onSelect({ kind: "edge", key: e.key }); }}>
+            <g key={e.key} opacity={dim ? 0.12 : faint ? 0.22 : 1} className="cursor-pointer fade" onMouseEnter={() => setHoverEdge(e.key)} onMouseLeave={() => setHoverEdge(null)} onClick={(ev) => { ev.stopPropagation(); onSelect({ kind: "edge", key: e.key }); }}>
               <path d={d} fill="none" stroke="transparent" strokeWidth={Math.max(10, w + 6)} />
               <path
                 d={d}
                 fill="none"
                 stroke={hit ? "#c92a2a" : meta.color}
-                strokeWidth={hit ? w + 1.2 : isSel ? w + 1.5 : w}
+                strokeWidth={hit ? w + 1.2 : isSel ? w + 1.5 : faint ? Math.min(w, 1.4) : w}
                 strokeDasharray={meta.dashed ? "5 5" : hit ? "10 6" : undefined}
                 className={hit ? "flow edge-line" : "edge-line"}
-                markerEnd={e.type === "competitor" || e.type === "partnership" ? undefined : `url(#arrow-${hit ? "hit" : e.type})`}
+                markerEnd={faint || e.type === "competitor" || e.type === "partnership" ? undefined : `url(#arrow-${hit ? "hit" : e.type})`}
                 strokeLinecap="round"
                 opacity={0.9}
               />
